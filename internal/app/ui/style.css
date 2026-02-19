@@ -1,0 +1,259 @@
+:root {
+  --bg: #f3f7f9;
+  --card: #ffffff;
+  --ink: #1b2936;
+  --muted: #5b6a79;
+  --line: #d6e0e8;
+  --accent: #0a7a73;
+  --accent-2: #d18e36;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: radial-gradient(900px 400px at 10% -10%, #dff5f2 0, transparent 70%),
+              radial-gradient(900px 500px at 90% -15%, #f8e9d6 0, transparent 70%),
+              var(--bg);
+  font-family: "IBM Plex Sans", "Source Sans 3", "Segoe UI", sans-serif;
+}
+
+.bg-shape {
+  position: fixed;
+  border-radius: 999px;
+  filter: blur(28px);
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+.bg-shape-a {
+  width: 300px;
+  height: 300px;
+  background: #75c6bf;
+  top: 40px;
+  left: -100px;
+}
+
+.bg-shape-b {
+  width: 280px;
+  height: 280px;
+  background: #e4bb7f;
+  top: 20px;
+  right: -120px;
+}
+
+.page {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 18px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(1.2rem, 3vw, 1.9rem);
+  letter-spacing: 0.02em;
+}
+
+.sub {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.chip {
+  background: rgba(10, 122, 115, 0.09);
+  border: 1px solid rgba(10, 122, 115, 0.2);
+  color: #045650;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 0.86rem;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 10px;
+  padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+select,
+input,
+button {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 8px 10px;
+  font-size: 0.9rem;
+  font-family: inherit;
+  background: #fff;
+}
+
+button {
+  align-self: end;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), #076964);
+  border: 0;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.ghost {
+  background: transparent;
+  color: #355068;
+  border: 1px solid var(--line);
+}
+
+.auto-wrap {
+  justify-content: end;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+}
+
+.meta {
+  margin-top: 10px;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+.gates {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.gates h2 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  color: #355068;
+}
+
+.gates-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.gates-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.gates-actions {
+  margin-top: 10px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.progress {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+  color: #134b66;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #9bc7db;
+  border-top-color: #0a7a73;
+  animation: spin 0.85s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.table-wrap {
+  margin-top: 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 980px;
+}
+
+th,
+td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #edf2f6;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+th {
+  text-align: left;
+  background: linear-gradient(180deg, #f7fbfd, #f2f8fa);
+  color: #355068;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+tr:hover td {
+  background: #f8fbfc;
+}
+
+td a {
+  color: #0b5f96;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+td a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 900px) {
+  .controls {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .gates-grid {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .controls button {
+    grid-column: 1 / -1;
+  }
+
+  .auto-wrap {
+    justify-content: start;
+  }
+}

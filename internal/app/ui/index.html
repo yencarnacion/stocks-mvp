@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NY Stock Idea Scanner</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="bg-shape bg-shape-a"></div>
+  <div class="bg-shape bg-shape-b"></div>
+
+  <main class="page">
+    <header class="topbar">
+      <div>
+        <h1>Stock Ideas Scanner</h1>
+        <p class="sub">All times are in America/New_York (ET)</p>
+      </div>
+      <div id="clock" class="chip">--</div>
+    </header>
+
+    <section class="controls">
+      <label>
+        Mode
+        <select id="mode" autocomplete="off">
+          <option value="live">Live</option>
+          <option value="historical">Historical Replay</option>
+        </select>
+      </label>
+      <label>
+        Date (NY)
+        <input id="date" type="date" autocomplete="off" />
+      </label>
+      <label>
+        Time (NY)
+        <input id="time" type="time" step="60" autocomplete="off" />
+      </label>
+      <label class="auto-wrap">
+        <input id="auto" type="checkbox" checked autocomplete="off" />
+        Auto-refresh
+      </label>
+      <button id="load">Load</button>
+    </section>
+
+    <section class="gates">
+      <h2>Hard Gates</h2>
+      <div class="gates-grid">
+        <label>Top K<input id="top_k" type="number" min="1" step="1" autocomplete="off" /></label>
+        <label>Min Price<input id="min_price" type="number" min="0" step="0.01" autocomplete="off" /></label>
+        <label>Max Price<input id="max_price" type="number" min="0" step="0.01" autocomplete="off" /></label>
+        <label>Min RVOL<input id="min_rvol" type="number" min="0" step="0.01" autocomplete="off" /></label>
+        <label>Min $/min<input id="min_dollar_vol_per_min" type="number" min="0" step="1" autocomplete="off" /></label>
+        <label>Min ADR x<input id="min_adr_expansion" type="number" min="0" step="0.01" autocomplete="off" /></label>
+        <label>Min 10d $vol<input id="min_avg_dollar_vol_10d" type="number" min="0" step="1" autocomplete="off" /></label>
+        <label>Max staleness ms<input id="max_staleness_ms" type="number" min="0" step="1" autocomplete="off" /></label>
+        <label>Spread cap bps (>=50)<input id="spread_cap_bps_50" type="number" min="0" step="0.01" autocomplete="off" /></label>
+        <label>Spread cap bps (>=10)<input id="spread_cap_bps_10" type="number" min="0" step="0.01" autocomplete="off" /></label>
+        <label>Spread cap bps (>=5)<input id="spread_cap_bps_5" type="number" min="0" step="0.01" autocomplete="off" /></label>
+      </div>
+      <div class="gates-actions">
+        <button id="reset-gates" type="button" class="ghost">Reset Gates</button>
+      </div>
+    </section>
+
+    <section class="meta" id="meta"></section>
+    <section class="progress hidden" id="progress">
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="progress-text">Loading data...</span>
+    </section>
+
+    <section class="table-wrap">
+      <table id="tbl">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Symbol</th>
+            <th>Score</th>
+            <th>Price</th>
+            <th>RVOL</th>
+            <th>Spread bps</th>
+            <th>$/min</th>
+            <th>10d $vol</th>
+            <th>Range %</th>
+            <th>ADR 10d %</th>
+            <th>ADR x</th>
+            <th>RS vs Bench</th>
+            <th>Upd ms</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

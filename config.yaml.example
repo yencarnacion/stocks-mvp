@@ -1,0 +1,60 @@
+server:
+  host: "0.0.0.0"
+  port: 8099
+  ticker_url_template: "http://localhost:8081/api/open-chart/{symbol}/{date}"
+
+databento:
+  dataset: "EQUS.MINI"
+  schema: "mbp-1"
+  stype_in: "raw_symbol"
+  benchmark_symbol: "QQQ"
+  symbols_mode: "watchlist" # watchlist | all_symbols
+  snapshot: false
+  verbose: false
+  max_control_msg_bytes: 20000
+
+market:
+  timezone: "America/New_York"
+  include_extended_hours: false
+  session_open: "09:30"
+  session_close: "16:00"
+  extended_open: "04:00"
+  extended_close: "20:00"
+
+baselines:
+  csv_path: "./baselines.csv"
+  fallback_avg_vol_10d: 2000000
+  fallback_adr_pct_10d: 0.025
+  fallback_avg_dollar_vol_10d: 20000000
+
+scan:
+  top_k: 30
+  rank_interval: "15s"
+  max_staleness: "60s"
+  historical_timeout: "90s"
+
+  min_price: 5
+  max_price: 300
+  min_rvol: 1.0
+  min_dollar_vol_per_min: 50000
+  min_adr_expansion: 1.1
+  min_avg_dollar_vol_10d: 20000000
+
+  spread_caps:
+    - min_price: 50
+      max_spread_pct: 0.05
+    - min_price: 10
+      max_spread_pct: 0.10
+    - min_price: 5
+      max_spread_pct: 0.15
+
+  scoring:
+    weights:
+      rvol: 0.35
+      rel_strength: 0.25
+      range: 0.20
+      liquidity: 0.10
+      spread: 0.10
+    spread_bps_cap: 20
+    range_expansion_cap: 3.0
+    liquidity_target_per_min: 1000000

@@ -32,6 +32,12 @@ type Server struct {
 	historyCache map[string]TopSnapshot
 }
 
+type BacksideHistoryItem struct {
+	TimeLabel string      `json:"time_label"`
+	AsOfNY    string      `json:"as_of_ny"`
+	Rows      []Candidate `json:"rows"`
+}
+
 func NewServer(log *slog.Logger, cfg Config, sc *Scanner, watchlist map[string]struct{}, baselines map[string]Baseline) *Server {
 	loc, err := time.LoadLocation(cfg.Market.Timezone)
 	if err != nil || loc == nil {
@@ -55,6 +61,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/api/settings", s.handleSettings)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/time", s.handleTime)
+	mux.HandleFunc("/api/backside-history", s.handleBacksideHistory)
 
 	sub, _ := fs.Sub(uiFS, "ui")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
@@ -200,6 +207,91 @@ func (s *Server) handleTime(w http.ResponseWriter, _ *http.Request) {
 		"date":     now.Format("2006-01-02"),
 		"time":     now.Format("15:04"),
 	})
+}
+
+func (s *Server) handleBacksideHistory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
+	if mode == "" {
+		mode = "live"
+	}
+	if mode != "live" && mode != "historical" {
+		http.Error(w, "mode must be live or historical", http.StatusBadRequest)
+		return
+	}
+
+	targetDate := time.Now().In(s.loc).Format("2006-01-02")
+	if rawDate := strings.TrimSpace(r.URL.Query().Get("date")); rawDate != "" {
+		if _, err := time.ParseInLocation("2006-01-02", rawDate, s.loc); err != nil {
+			http.Error(w, "invalid date format (expected YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		targetDate = rawDate
+	}
+
+	// This endpoint is driven from the in-memory live scanner timeline.
+	// For non-live mode we return an empty payload to keep UI behavior predictable.
+	if mode != "live" {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"mode":     mode,
+			"date_ny":  targetDate,
+			"timezone": s.cfg.Market.Timezone,
+			"count":    0,
+			"items":    []BacksideHistoryItem{},
+		})
+		return
+	}
+
+	items := collectBacksideHistoryItems(s.sc.GetHistory(), targetDate, s.loc)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"mode":     mode,
+		"date_ny":  targetDate,
+		"timezone": s.cfg.Market.Timezone,
+		"count":    len(items),
+		"items":    items,
+	})
+}
+
+func collectBacksideHistoryItems(history []TopSnapshot, targetDate string, loc *time.Location) []BacksideHistoryItem {
+	if len(history) == 0 {
+		return []BacksideHistoryItem{}
+	}
+
+	out := make([]BacksideHistoryItem, 0, len(history))
+	lastSignature := ""
+	for _, snap := range history {
+		if snap.GeneratedAt.In(loc).Format("2006-01-02") != targetDate {
+			continue
+		}
+
+		nextSignature := backsideSignature(snap.BacksideCandidates)
+		triggered := lastSignature != "" && nextSignature != lastSignature
+		lastSignature = nextSignature
+		if !triggered || len(snap.BacksideCandidates) == 0 {
+			continue
+		}
+
+		rows := make([]Candidate, len(snap.BacksideCandidates))
+		copy(rows, snap.BacksideCandidates)
+		out = append(out, BacksideHistoryItem{
+			TimeLabel: snap.GeneratedAt.In(loc).Format("15:04"),
+			AsOfNY:    snap.AsOfNY,
+			Rows:      rows,
+		})
+	}
+	return out
+}
+
+func backsideSignature(rows []Candidate) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(rows))
+	for _, c := range rows {
+		parts = append(parts, c.Symbol+":"+strconv.Itoa(c.Rank))
+	}
+	return strings.Join(parts, "|")
 }
 
 func (s *Server) historicalSnapshot(ctx context.Context, asOfNY time.Time, scan *ScanConfig) (TopSnapshot, error) {

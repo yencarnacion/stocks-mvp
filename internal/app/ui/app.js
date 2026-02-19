@@ -9,6 +9,7 @@ let defaultGates = {};
 let tickerURLTemplate = '';
 let activeTab = 'strongest';
 let lastSnapshot = null;
+let backsideHistory = [];
 const nyClockFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York',
   year: 'numeric',
@@ -36,6 +37,35 @@ const GATE_FIELDS = [
 ];
 
 const INT_FIELDS = new Set(['top_k', 'max_staleness_ms']);
+
+const MAIN_TABLE_HEADERS = [
+  '#',
+  'Symbol',
+  'Score',
+  'Price',
+  'RVOL',
+  'Spread bps',
+  '$/min',
+  '10d $vol',
+  'Range %',
+  'ADR 10d %',
+  'ADR x',
+  'RS vs Bench',
+  'Upd ms',
+];
+
+const BACKSIDE_HISTORY_HEADERS = [
+  'Time',
+  '#',
+  'Symbol',
+  'Score',
+  'Price',
+  'RVOL',
+  'Spread bps',
+  '$/min',
+  'ADR x',
+  'RS vs Bench',
+];
 
 function qs(id) {
   return document.getElementById(id);
@@ -156,6 +186,48 @@ function formatTickerURL(symbol, data) {
     .replaceAll('{as_of}', encodeURIComponent(String(data?.as_of_ny || '')));
 }
 
+function parseAsOfParts(asOfNY) {
+  const asOf = String(asOfNY || '');
+  const date = asOf.length >= 10 ? asOf.slice(0, 10) : '';
+  const timeWithColon = asOf.length >= 16 ? asOf.slice(11, 16) : '';
+  const timeHHMM = timeWithColon.replace(':', '');
+  return { asOf, date, timeWithColon, timeHHMM };
+}
+
+function openChartBaseFromTemplate(template) {
+  const trimmed = String(template || '').trim();
+  if (!trimmed) {
+    return '/api/open-chart';
+  }
+  const i = trimmed.indexOf('/api/open-chart');
+  if (i < 0) {
+    return '';
+  }
+  return `${trimmed.slice(0, i)}/api/open-chart`;
+}
+
+function formatBacksideHistoryTickerURL(symbol, asOfNY) {
+  const tpl = String(tickerURLTemplate || '').trim();
+  const parts = parseAsOfParts(asOfNY);
+  const openChartBase = openChartBaseFromTemplate(tpl);
+  if (openChartBase) {
+    const q = new URLSearchParams();
+    q.set('ticker', symbol);
+    if (parts.date) q.set('date', parts.date);
+    // For backside historical links we include optional time=HHMM when available.
+    if (parts.timeHHMM) q.set('time', parts.timeHHMM);
+    q.set('signal', 'buy');
+    return `${openChartBase}?${q.toString()}`;
+  }
+  if (!tpl) return '';
+  return tpl
+    .replaceAll('{symbol}', encodeURIComponent(symbol))
+    .replaceAll('{date}', encodeURIComponent(parts.date))
+    .replaceAll('{time}', encodeURIComponent(parts.timeHHMM))
+    .replaceAll('{signal}', encodeURIComponent('buy'))
+    .replaceAll('{as_of}', encodeURIComponent(parts.asOf));
+}
+
 function applyGateValues(values) {
   for (const key of GATE_FIELDS) {
     const el = qs(key);
@@ -179,10 +251,36 @@ function listForTab(data) {
   return data.strongest_candidates || data.candidates || [];
 }
 
-function renderRows(data) {
+function appendCell(tr, cell) {
+  const td = document.createElement('td');
+  if (cell && typeof cell === 'object' && cell.href) {
+    const a = document.createElement('a');
+    a.href = cell.href;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = cell.value ?? '';
+    td.appendChild(a);
+  } else {
+    td.textContent = cell ?? '';
+  }
+  tr.appendChild(td);
+}
+
+function renderTableHeader() {
+  const row = document.querySelector('#tbl thead tr');
+  if (!row) return;
+  row.innerHTML = '';
+  const headers = activeTab === 'backside-history' ? BACKSIDE_HISTORY_HEADERS : MAIN_TABLE_HEADERS;
+  for (const h of headers) {
+    const th = document.createElement('th');
+    th.textContent = h;
+    row.appendChild(th);
+  }
+}
+
+function renderDefaultRows(data) {
   const tbody = document.querySelector('#tbl tbody');
   tbody.innerHTML = '';
-
   for (const c of listForTab(data)) {
     const tr = document.createElement('tr');
     const link = formatTickerURL(c.symbol, data);
@@ -203,29 +301,69 @@ function renderRows(data) {
     ];
 
     for (const cell of cells) {
-      const td = document.createElement('td');
-      if (cell && typeof cell === 'object' && cell.href) {
-        const a = document.createElement('a');
-        a.href = cell.href;
-        a.target = '_blank';
-        a.rel = 'noopener noreferrer';
-        a.textContent = cell.value ?? '';
-        td.appendChild(a);
-      } else {
-        td.textContent = cell ?? '';
-      }
-      tr.appendChild(td);
+      appendCell(tr, cell);
     }
     tbody.appendChild(tr);
   }
 }
 
+function renderBacksideHistoryRows() {
+  const tbody = document.querySelector('#tbl tbody');
+  tbody.innerHTML = '';
+
+  for (const item of backsideHistory) {
+    for (const c of item.rows || []) {
+      const tr = document.createElement('tr');
+      const link = formatBacksideHistoryTickerURL(c.symbol, item.as_of_ny);
+      const cells = [
+        item.time_label || '',
+        c.rank,
+        { value: c.symbol, href: link },
+        num(c.score, 4),
+        num(c.price, 2),
+        num(c.rvol, 2),
+        num(c.spread_bps, 2),
+        Math.round(c.dollar_vol_per_min || 0).toLocaleString(),
+        num(c.adr_expansion, 2),
+        `${num((c.rel_strength_vs_spy || 0) * 100, 2)}%`,
+      ];
+      for (const cell of cells) {
+        appendCell(tr, cell);
+      }
+      tbody.appendChild(tr);
+    }
+  }
+}
+
+function renderRows(data) {
+  if (activeTab === 'backside-history') {
+    renderBacksideHistoryRows();
+    return;
+  }
+  renderDefaultRows(data);
+}
+
+function syncModeDependentTabs() {
+  const mode = qs('mode')?.value;
+  const isLive = mode === 'live';
+  qs('tab-backside-history')?.classList.toggle('hidden', !isLive);
+  if (!isLive && activeTab === 'backside-history') {
+    activeTab = 'backside';
+  }
+}
+
 function setTab(tab) {
-  activeTab = tab === 'weakest' || tab === 'hp' || tab === 'backside' ? tab : 'strongest';
+  const mode = qs('mode')?.value || 'live';
+  const isLive = mode === 'live';
+  activeTab = tab === 'weakest' || tab === 'hp' || tab === 'backside' || (isLive && tab === 'backside-history')
+    ? tab
+    : 'strongest';
   qs('tab-strongest')?.classList.toggle('active', activeTab === 'strongest');
   qs('tab-weakest')?.classList.toggle('active', activeTab === 'weakest');
   qs('tab-hp')?.classList.toggle('active', activeTab === 'hp');
   qs('tab-backside')?.classList.toggle('active', activeTab === 'backside');
+  qs('tab-backside-history')?.classList.toggle('active', activeTab === 'backside-history');
+  renderTableHeader();
   renderRows(lastSnapshot);
 }
 
@@ -234,10 +372,30 @@ function updateTabLabels(data) {
   const weakestCount = (data?.weakest_candidates || []).length;
   const hpCount = (data?.hard_pass_candidates || []).length;
   const backsideCount = (data?.backside_candidates || []).length;
+  const backsideHistoryCount = (backsideHistory || []).length;
   if (qs('tab-strongest')) qs('tab-strongest').textContent = `Strongest (${strongestCount})`;
   if (qs('tab-weakest')) qs('tab-weakest').textContent = `Weakest (${weakestCount})`;
   if (qs('tab-hp')) qs('tab-hp').textContent = `HP (${hpCount})`;
   if (qs('tab-backside')) qs('tab-backside').textContent = `Backside (${backsideCount})`;
+  if (qs('tab-backside-history')) qs('tab-backside-history').textContent = `Backside Historical (${backsideHistoryCount})`;
+}
+
+async function refreshBacksideHistory(mode) {
+  if (mode !== 'live') {
+    backsideHistory = [];
+    return;
+  }
+  const params = new URLSearchParams({ mode: 'live' });
+  const date = qs('date')?.value;
+  if (date) {
+    params.set('date', date);
+  }
+  const res = await fetch(`/api/backside-history?${params.toString()}`, { cache: 'no-store' });
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+  const data = await res.json();
+  backsideHistory = data.items || [];
 }
 
 function disableAutocomplete() {
@@ -304,6 +462,11 @@ function buildURL() {
 
 async function refresh() {
   const mode = qs('mode').value;
+  const prevTab = activeTab;
+  syncModeDependentTabs();
+  if (prevTab !== activeTab) {
+    setTab(activeTab);
+  }
   setLoading(true, mode === 'historical' ? 'Replaying historical data' : 'Loading live data');
   try {
     const built = buildURL();
@@ -318,6 +481,12 @@ async function refresh() {
     }
     lastBacksideSignature = nextBacksideSignature;
     lastSnapshot = data;
+    try {
+      await refreshBacksideHistory(mode);
+    } catch (histErr) {
+      console.error(histErr);
+      backsideHistory = [];
+    }
 
     const gateSuffix = built.gateChanges > 0 ? ` | Gate overrides: ${built.gateChanges}` : '';
     const dbg = data.gate_debug || {};
@@ -337,6 +506,7 @@ async function refresh() {
   } catch (err) {
     console.error(err);
     lastSnapshot = null;
+    backsideHistory = [];
     lastBacksideSignature = '';
     updateTabLabels(null);
     qs('meta').textContent = `Error: ${err.message}`;
@@ -368,6 +538,8 @@ function wire() {
   });
   qs('sound-test')?.addEventListener('click', () => playBacksideChangeAlert(true));
   qs('mode').addEventListener('change', () => {
+    syncModeDependentTabs();
+    setTab(activeTab);
     schedule();
     refresh();
   });
@@ -388,6 +560,7 @@ function wire() {
   qs('tab-weakest')?.addEventListener('click', () => setTab('weakest'));
   qs('tab-hp')?.addEventListener('click', () => setTab('hp'));
   qs('tab-backside')?.addEventListener('click', () => setTab('backside'));
+  qs('tab-backside-history')?.addEventListener('click', () => setTab('backside-history'));
 }
 
 function setLoading(isLoading, baseText = 'Loading data') {
@@ -423,6 +596,7 @@ function setLoading(isLoading, baseText = 'Loading data') {
   disableAutocomplete();
   wireAudioUnlock();
   soundEnabled = !!qs('sound')?.checked;
+  syncModeDependentTabs();
   updateTabLabels(null);
   setTab('strongest');
   await bootstrapNowNY();

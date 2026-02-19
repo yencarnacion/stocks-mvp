@@ -1129,10 +1129,6 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (fl
 	if lod <= 0 || sessionVWAP <= lod || price <= lod {
 		return 0, false
 	}
-	midpoint := lod + 0.5*(sessionVWAP-lod)
-	if price > midpoint {
-		return 0, false
-	}
 
 	// Starter low bar for backside potential: a 1-minute swing-low style bar.
 	starterLowIdx := -1
@@ -1148,6 +1144,14 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (fl
 		}
 	}
 	if starterLowIdx < 0 {
+		return 0, false
+	}
+	starterLow := float64(bars[starterLowIdx].LowPxN) / pxScale
+	if starterLow <= 0 || sessionVWAP <= starterLow {
+		return 0, false
+	}
+	midpoint := starterLow + 0.5*(sessionVWAP-starterLow)
+	if price > midpoint {
 		return 0, false
 	}
 
@@ -1178,10 +1182,6 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (fl
 	if earlyIdx > lateIdx {
 		earlyIdx, lateIdx = lateIdx, earlyIdx
 	}
-	// Exactly one candle between the identified higher-high and higher-low.
-	if lateIdx-earlyIdx != 2 {
-		return 0, false
-	}
 	if earlyIdx <= starterLowIdx || lateIdx <= starterLowIdx {
 		return 0, false
 	}
@@ -1191,16 +1191,6 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (fl
 	}
 	postIdx := lateIdx + 1
 	if postIdx <= starterLowIdx {
-		return 0, false
-	}
-	midIdx := earlyIdx + 1
-	midHigh := float64(bars[midIdx].HighPxN) / pxScale
-	midLow := float64(bars[midIdx].LowPxN) / pxScale
-	if midHigh <= 0 || midLow <= 0 || midLow <= lod {
-		return 0, false
-	}
-	consolRangePct := (midHigh - midLow) / price
-	if consolRangePct > 0.0035 {
 		return 0, false
 	}
 
@@ -1224,9 +1214,8 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (fl
 		return 0, false
 	}
 	consistency := clamp01(0.5*(float64(hhCount)/steps) + 0.5*(float64(hlCount)/steps))
-	tightness := clamp01(1.0 - (consolRangePct / 0.0035))
 	emaSupport := clamp01(float64(aboveEMA) / 3.0)
-	score := clamp01(0.45*consistency + 0.35*tightness + 0.20*emaSupport)
+	score := clamp01(0.70*consistency + 0.30*emaSupport)
 	return score, true
 }
 

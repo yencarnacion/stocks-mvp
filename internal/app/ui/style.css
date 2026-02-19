@@ -251,6 +251,22 @@ tr:hover td {
   background: #f8fbfc;
 }
 
+.row-new td {
+  animation: new-row-flash 1.4s ease-out 1;
+}
+
+@keyframes new-row-flash {
+  0% {
+    background: #fff4b8;
+  }
+  35% {
+    background: #ffe78a;
+  }
+  100% {
+    background: transparent;
+  }
+}
+
 td a {
   color: #0b5f96;
   text-decoration: none;

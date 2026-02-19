@@ -11,6 +11,9 @@ let tickerURLTemplate = '';
 let activeTab = 'strongest';
 let lastSnapshot = null;
 let backsideHistory = [];
+let backsideHistoryKnownKeys = new Set();
+let backsideHistoryNewKeys = new Set();
+let hasBacksideHistoryBaseline = false;
 const nyClockFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York',
   year: 'numeric',
@@ -319,6 +322,12 @@ function renderBacksideHistoryRows() {
     for (const c of item.rows || []) {
       const tr = document.createElement('tr');
       const link = formatBacksideHistoryTickerURL(c.symbol, item.as_of_ny);
+      const key = `${item.as_of_ny || ''}|${c.symbol || ''}`;
+      const isNew = backsideHistoryNewKeys.has(key);
+      if (isNew) {
+        tr.classList.add('row-new');
+        setTimeout(() => tr.classList.remove('row-new'), 1500);
+      }
       const cells = [
         item.time_label || '',
         c.rank,
@@ -390,7 +399,10 @@ function updateTabLabels(data) {
 async function refreshBacksideHistory(mode) {
   if (mode !== 'live') {
     backsideHistory = [];
-    return;
+    backsideHistoryKnownKeys = new Set();
+    backsideHistoryNewKeys = new Set();
+    hasBacksideHistoryBaseline = false;
+    return 0;
   }
   const params = new URLSearchParams({ mode: 'live' });
   const date = qs('date')?.value;
@@ -402,7 +414,29 @@ async function refreshBacksideHistory(mode) {
     throw new Error(await res.text());
   }
   const data = await res.json();
-  backsideHistory = data.items || [];
+  const items = Array.isArray(data.items) ? [...data.items].reverse() : [];
+
+  const nextKnown = new Set();
+  for (const item of items) {
+    for (const c of item.rows || []) {
+      nextKnown.add(`${item.as_of_ny || ''}|${c.symbol || ''}`);
+    }
+  }
+
+  const newlyAdded = new Set();
+  if (hasBacksideHistoryBaseline) {
+    for (const k of nextKnown) {
+      if (!backsideHistoryKnownKeys.has(k)) {
+        newlyAdded.add(k);
+      }
+    }
+  }
+
+  backsideHistory = items;
+  backsideHistoryNewKeys = newlyAdded;
+  backsideHistoryKnownKeys = nextKnown;
+  hasBacksideHistoryBaseline = true;
+  return newlyAdded.size;
 }
 
 function disableAutocomplete() {
@@ -469,6 +503,7 @@ function buildURL() {
 
 async function refresh() {
   const mode = qs('mode').value;
+  let playedBacksideAlert = false;
   const prevTab = activeTab;
   syncModeDependentTabs();
   if (prevTab !== activeTab) {
@@ -487,8 +522,9 @@ async function refresh() {
       const shouldPlayBacksideAlert = hasBacksideSignatureBaseline
         && !!nextBacksideSignature
         && nextBacksideSignature !== lastBacksideSignature;
-      if (shouldPlayBacksideAlert) {
+      if (shouldPlayBacksideAlert && soundEnabled) {
         playBacksideChangeAlert();
+        playedBacksideAlert = true;
       }
       lastBacksideSignature = nextBacksideSignature;
       hasBacksideSignatureBaseline = true;
@@ -497,11 +533,18 @@ async function refresh() {
       hasBacksideSignatureBaseline = false;
     }
     lastSnapshot = data;
+    let backsideHistoryAdditions = 0;
     try {
-      await refreshBacksideHistory(mode);
+      backsideHistoryAdditions = await refreshBacksideHistory(mode);
+      if (mode === 'live' && backsideHistoryAdditions > 0 && !playedBacksideAlert) {
+        playBacksideChangeAlert(true);
+      }
     } catch (histErr) {
       console.error(histErr);
       backsideHistory = [];
+      backsideHistoryKnownKeys = new Set();
+      backsideHistoryNewKeys = new Set();
+      hasBacksideHistoryBaseline = false;
     }
 
     const gateSuffix = built.gateChanges > 0 ? ` | Gate overrides: ${built.gateChanges}` : '';

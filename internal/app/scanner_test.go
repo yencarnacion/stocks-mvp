@@ -126,3 +126,50 @@ func TestPublishKeepsLiveRVOLFromFirstSnapshotInMinute(t *testing.T) {
 		t.Fatalf("expected next-minute RVOL rows to refresh, got %+v", got.RVOLCandidates)
 	}
 }
+
+func TestLiveEvalNY(t *testing.T) {
+	loc := mustLoadTestLoc(t)
+	now := time.Date(2026, 2, 19, 11, 0, 0, 0, loc)
+
+	if got := liveEvalNY(now, 0, loc); !got.Equal(now) {
+		t.Fatalf("expected now when max event missing, got %v", got)
+	}
+
+	pastEvent := now.Add(-20 * time.Minute)
+	if got := liveEvalNY(now, pastEvent.UTC().UnixNano(), loc); !got.Equal(pastEvent) {
+		t.Fatalf("expected past event time during backfill, got %v", got)
+	}
+
+	futureEvent := now.Add(2 * time.Minute)
+	if got := liveEvalNY(now, futureEvent.UTC().UnixNano(), loc); !got.Equal(now) {
+		t.Fatalf("expected now when event is in future, got %v", got)
+	}
+}
+
+func TestPassesRVOLTabGates(t *testing.T) {
+	cfg := defaultConfig()
+	scan := cfg.Scan
+	scan.MinDollarVolPerM = 100_000
+	scan.MinAvgDollarVol10d = 10_000_000
+
+	if !passesRVOLTabGates(featureRow{
+		dollarVolPerMin: 150_000,
+		avgDollarVol10d: 20_000_000,
+	}, scan) {
+		t.Fatalf("expected row with sufficient dollar volume to pass RVOL tab gates")
+	}
+
+	if passesRVOLTabGates(featureRow{
+		dollarVolPerMin: 90_000,
+		avgDollarVol10d: 20_000_000,
+	}, scan) {
+		t.Fatalf("expected row with low $/min to fail RVOL tab gates")
+	}
+
+	if passesRVOLTabGates(featureRow{
+		dollarVolPerMin: 150_000,
+		avgDollarVol10d: 9_000_000,
+	}, scan) {
+		t.Fatalf("expected row with low 10d $vol to fail RVOL tab gates")
+	}
+}

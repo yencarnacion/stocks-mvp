@@ -455,14 +455,18 @@ func (s *Scanner) runStream(ctx context.Context, start time.Time, historical boo
 		nowNY := time.Now().In(s.loc)
 		currentMinute := nowNY.Truncate(time.Minute)
 		if lastMinutePublish.IsZero() || currentMinute.After(lastMinutePublish) {
-			s.publish(s.computeSnapshotAt(nowNY, "live"), true)
+			maxEvent := int64(atomic.LoadUint64(&s.maxEvent))
+			evalNY := liveEvalNY(nowNY, maxEvent, s.loc)
+			s.publish(s.computeSnapshotAt(evalNY, "live"), true)
 			lastMinutePublish = currentMinute
 			lastRank = time.Now()
 			continue
 		}
 
 		if time.Since(lastRank) >= s.cfg.Scan.RankInterval.Duration {
-			s.publish(s.computeSnapshotAt(nowNY, "live"), true)
+			maxEvent := int64(atomic.LoadUint64(&s.maxEvent))
+			evalNY := liveEvalNY(nowNY, maxEvent, s.loc)
+			s.publish(s.computeSnapshotAt(evalNY, "live"), true)
 			lastRank = time.Now()
 		}
 	}
@@ -490,7 +494,9 @@ func (s *Scanner) runStream(ctx context.Context, start time.Time, historical boo
 		s.publish(finalSnap, false)
 	} else {
 		nowNY := time.Now().In(s.loc)
-		finalSnap = s.computeSnapshotAt(nowNY, "live")
+		maxEvent := int64(atomic.LoadUint64(&s.maxEvent))
+		evalNY := liveEvalNY(nowNY, maxEvent, s.loc)
+		finalSnap = s.computeSnapshotAt(evalNY, "live")
 		s.publish(finalSnap, true)
 	}
 
@@ -948,6 +954,18 @@ func spreadBpsForMinPrice(scan ScanConfig, minPrice float64) float64 {
 		}
 	}
 	return 0
+}
+
+func liveEvalNY(nowNY time.Time, maxEventNs int64, loc *time.Location) time.Time {
+	nowNY = nowNY.In(loc)
+	if maxEventNs <= 0 {
+		return nowNY
+	}
+	eventNY := time.Unix(0, maxEventNs).In(loc)
+	if eventNY.After(nowNY) {
+		return nowNY
+	}
+	return eventNY
 }
 
 func priceAtOrBefore(st *SymbolState, targetNs int64, nowNs int64) (float64, bool) {
@@ -1479,40 +1497,10 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	hardPassRanked := 0
 	backsideRanked := 0
 	hardPassOut := make([]Candidate, 0, 256)
+	rvolPool := make([]Candidate, 0, 256)
 	for _, row := range rows {
 		relStrength := row.relStrength
 		debug.RowsEvaluated++
-
-		if row.updatedMsAgo > scan.MaxStaleness.Duration.Milliseconds() {
-			debug.FailStale++
-			continue
-		}
-		if row.avgDollarVol10d < scan.MinAvgDollarVol10d {
-			debug.FailMinAvgDollarVol10d++
-			continue
-		}
-		if row.rvol < scan.MinRVOL {
-			debug.FailMinRVOL++
-			continue
-		}
-		if row.dollarVolPerMin < scan.MinDollarVolPerM {
-			debug.FailMinDollarVolPerMin++
-			continue
-		}
-		if row.adrExpansion < scan.MinAdrExpansion {
-			debug.FailMinAdrExpansion++
-			continue
-		}
-		if row.spreadPct > s.maxSpreadPctForScan(row.price, scan) {
-			debug.FailSpreadCap++
-			continue
-		}
-		// Additional spread stability check: reject names that exceed scoring spread budget.
-		if row.spreadBps > scan.Scoring.SpreadBpsCap {
-			debug.FailSpreadCap++
-			continue
-		}
-		debug.PassedAllGates++
 
 		rvolScore := gaussianPercentile(zscore(row.logRvol, meanLR, stdLR))
 		rs5Z := zscore(row.rs5m, meanRS5, stdRS5)
@@ -1575,6 +1563,42 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 			VWAPSlope5m:      row.vwapSlope5m,
 			UpdatedMsAgo:     row.updatedMsAgo,
 		}
+		if passesRVOLTabGates(row, scan) {
+			c := cand
+			c.Score = math.Max(strongestScore, weakestScore)
+			rvolPool = append(rvolPool, c)
+		}
+
+		if row.updatedMsAgo > scan.MaxStaleness.Duration.Milliseconds() {
+			debug.FailStale++
+			continue
+		}
+		if row.avgDollarVol10d < scan.MinAvgDollarVol10d {
+			debug.FailMinAvgDollarVol10d++
+			continue
+		}
+		if row.rvol < scan.MinRVOL {
+			debug.FailMinRVOL++
+			continue
+		}
+		if row.dollarVolPerMin < scan.MinDollarVolPerM {
+			debug.FailMinDollarVolPerMin++
+			continue
+		}
+		if row.adrExpansion < scan.MinAdrExpansion {
+			debug.FailMinAdrExpansion++
+			continue
+		}
+		if row.spreadPct > s.maxSpreadPctForScan(row.price, scan) {
+			debug.FailSpreadCap++
+			continue
+		}
+		// Additional spread stability check: reject names that exceed scoring spread budget.
+		if row.spreadBps > scan.Scoring.SpreadBpsCap {
+			debug.FailSpreadCap++
+			continue
+		}
+		debug.PassedAllGates++
 		cHardPass := cand
 		cHardPass.Score = math.Max(strongestScore, weakestScore)
 		hardPassOut = append(hardPassOut, cHardPass)
@@ -1645,7 +1669,7 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	for i := range hardPassOut {
 		hardPassOut[i].Rank = i + 1
 	}
-	rvolOut := topRVOLCandidates(hardPassOut, rvolTopK)
+	rvolOut := topRVOLCandidates(rvolPool, rvolTopK)
 
 	message := ""
 	if len(rows) == 0 {
@@ -1770,6 +1794,12 @@ func topRVOLCandidates(in []Candidate, k int) []Candidate {
 		out[i].Rank = i + 1
 	}
 	return out
+}
+
+func passesRVOLTabGates(row featureRow, scan ScanConfig) bool {
+	// RVOL tab intentionally bypasses most hard gates and keeps only dollar-volume constraints.
+	return row.avgDollarVol10d >= scan.MinAvgDollarVol10d &&
+		row.dollarVolPerMin >= scan.MinDollarVolPerM
 }
 
 func pushTopK(h *candHeap, c Candidate, k int) {

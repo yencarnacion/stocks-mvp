@@ -235,6 +235,11 @@ func (s *Server) historicalSnapshot(ctx context.Context, asOfNY time.Time, scan 
 		s.log.Error("historical replay failed", "as_of_ny", asOfNY.Format("2006-01-02 15:04:05 MST"), "err", err)
 		return TopSnapshot{}, err
 	}
+	// Always stamp historical responses with the exact requested as-of time.
+	stamp := asOfNY.Format("2006-01-02 15:04:05 MST")
+	snap.GeneratedAt = asOfNY
+	snap.GeneratedAtNY = stamp
+	snap.AsOfNY = stamp
 	s.log.Info("historical replay succeeded", "as_of_ny", asOfNY.Format("2006-01-02 15:04:05 MST"), "candidates", len(snap.Candidates))
 
 	s.historyMu.Lock()

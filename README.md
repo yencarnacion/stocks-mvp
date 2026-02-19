@@ -48,3 +48,17 @@ curl 'http://localhost:8099/api/top?mode=historical&date=2026-02-19&time=09:30'
 # what you would have seen at 09:45 NY today
 curl 'http://localhost:8099/api/top?mode=historical&date=2026-02-19&time=09:45'
 ```
+
+## Daily markdown report
+
+Generate a full-day historical report grouped by tab (`Strongest`, `Weakest`, `Backside`) and by time:
+
+```bash
+go run ./cmd/report -date 20260218 -output output.md
+```
+
+- `-date` is required in `YYYYMMDD`.
+- `-output` defaults to `output.md`.
+- Optional flags: `-config`, `-watchlist`, `-baselines`, `-dotenv`, `-timeout`.
+
+The report includes clickable ticker links that call `/api/open-chart` with `ticker`, `date`, `time`, and tab-aligned `signal` (`buy`/`sell`).

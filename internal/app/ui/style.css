@@ -81,7 +81,7 @@ h1 {
 
 .controls {
   display: grid;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  grid-template-columns: repeat(7, minmax(120px, 1fr));
   gap: 10px;
   padding: 12px;
   background: var(--card);
@@ -201,6 +201,27 @@ button.ghost {
   border: 1px solid var(--line);
   border-radius: 14px;
   overflow: auto;
+}
+
+.table-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 10px 10px 0;
+}
+
+.tab-btn {
+  background: #f4f8fb;
+  color: #36516a;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: 9px 9px 0 0;
+  padding: 8px 12px;
+}
+
+.tab-btn.active {
+  background: #ffffff;
+  color: #0a7a73;
+  border-color: #bfd3de;
 }
 
 table {

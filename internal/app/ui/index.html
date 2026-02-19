@@ -39,6 +39,11 @@
         <input id="auto" type="checkbox" checked autocomplete="off" />
         Auto-refresh
       </label>
+      <label class="auto-wrap">
+        <input id="sound" type="checkbox" autocomplete="off" />
+        Sound
+      </label>
+      <button id="sound-test" type="button" class="ghost">Sound Test</button>
       <button id="load">Load</button>
     </section>
 
@@ -69,6 +74,12 @@
     </section>
 
     <section class="table-wrap">
+      <div class="table-tabs">
+        <button id="tab-strongest" type="button" class="tab-btn active">Strongest</button>
+        <button id="tab-weakest" type="button" class="tab-btn">Weakest</button>
+        <button id="tab-hp" type="button" class="tab-btn">HP</button>
+        <button id="tab-backside" type="button" class="tab-btn">Backside</button>
+      </div>
       <table id="tbl">
         <thead>
           <tr>

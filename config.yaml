@@ -34,11 +34,11 @@ scan:
   historical_timeout: "90s"
 
   min_price: 5
-  max_price: 300
+  max_price: 500
   min_rvol: 1.0
   min_dollar_vol_per_min: 50000
-  min_adr_expansion: 1.1
-  min_avg_dollar_vol_10d: 20000000
+  min_adr_expansion: 1.0
+  min_avg_dollar_vol_10d: 10000000
 
   spread_caps:
     - min_price: 50
@@ -55,6 +55,6 @@ scan:
       range: 0.20
       liquidity: 0.10
       spread: 0.10
-    spread_bps_cap: 20
-    range_expansion_cap: 3.0
+    spread_bps_cap: 200
+    range_expansion_cap: 10.0
     liquidity_target_per_min: 1000000

@@ -20,7 +20,14 @@ import (
 	dbn_live "github.com/NimbleMarkets/dbn-go/live"
 )
 
-const pxScale = 1_000_000_000.0
+const (
+	pxScale           = 1_000_000_000.0
+	maxIntradayBars   = 180
+	rsWindow5m        = 1 * time.Minute
+	rsWindow15m       = 15 * time.Minute
+	rsWindow30m       = 30 * time.Minute
+	vwapSlopeLookback = 1 * time.Minute
+)
 
 // SymbolState holds rolling intraday state derived from MBP-1 records.
 type SymbolState struct {
@@ -43,6 +50,20 @@ type SymbolState struct {
 	FirstTradeTs uint64
 	LastTradeTs  uint64
 	LastQuoteTs  uint64
+
+	BarMinuteNs int64
+	BarHighPxN  int64
+	BarLowPxN   int64
+	BarClosePxN int64
+	Bars        []intradayBar
+}
+
+type intradayBar struct {
+	MinuteStartNs int64
+	HighPxN       int64
+	LowPxN        int64
+	ClosePxN      int64
+	VWAP          float64
 }
 
 func (s *SymbolState) lastUpdateTs() uint64 {
@@ -75,22 +96,36 @@ type Candidate struct {
 	RetFromOpen      float64 `json:"ret_from_open"`
 	SpyRetFromOpen   float64 `json:"spy_ret_from_open"`
 	RelStrengthVsSpy float64 `json:"rel_strength_vs_spy"`
+	RS5mVsSpy        float64 `json:"rs_5m_vs_spy"`
+	RS15mVsSpy       float64 `json:"rs_15m_vs_spy"`
+	RS30mVsSpy       float64 `json:"rs_30m_vs_spy"`
+	SessionVWAP      float64 `json:"session_vwap"`
+	VWAPSlope5m      float64 `json:"vwap_slope_5m"`
 
 	UpdatedMsAgo int64 `json:"updated_ms_ago"`
 }
 
 type TopSnapshot struct {
-	Mode          string      `json:"mode"`
-	Timezone      string      `json:"timezone"`
-	GeneratedAt   time.Time   `json:"generated_at"`
-	GeneratedAtNY string      `json:"generated_at_ny"`
-	AsOfNY        string      `json:"as_of_ny"`
-	Benchmark     string      `json:"benchmark"`
-	CountSeen     int         `json:"count_seen"`
-	CountRanked   int         `json:"count_ranked"`
-	Message       string      `json:"message,omitempty"`
-	GateDebug     GateDebug   `json:"gate_debug"`
-	Candidates    []Candidate `json:"candidates"`
+	Mode           string    `json:"mode"`
+	Timezone       string    `json:"timezone"`
+	GeneratedAt    time.Time `json:"generated_at"`
+	GeneratedAtNY  string    `json:"generated_at_ny"`
+	AsOfNY         string    `json:"as_of_ny"`
+	Benchmark      string    `json:"benchmark"`
+	CountSeen      int       `json:"count_seen"`
+	CountRanked    int       `json:"count_ranked"`
+	CountStrongest int       `json:"count_strongest"`
+	CountWeakest   int       `json:"count_weakest"`
+	CountHardPass  int       `json:"count_hard_pass"`
+	CountBackside  int       `json:"count_backside"`
+	Message        string    `json:"message,omitempty"`
+	GateDebug      GateDebug `json:"gate_debug"`
+	// Keep Candidates for backward compatibility with older clients; this mirrors StrongestCandidates.
+	Candidates          []Candidate `json:"candidates"`
+	StrongestCandidates []Candidate `json:"strongest_candidates"`
+	WeakestCandidates   []Candidate `json:"weakest_candidates"`
+	HardPassCandidates  []Candidate `json:"hard_pass_candidates"`
+	BacksideCandidates  []Candidate `json:"backside_candidates"`
 }
 
 type GateDebug struct {
@@ -101,6 +136,10 @@ type GateDebug struct {
 	FailMinDollarVolPerMin    int     `json:"fail_min_dollar_vol_per_min"`
 	FailMinAdrExpansion       int     `json:"fail_min_adr_expansion"`
 	FailSpreadCap             int     `json:"fail_spread_cap"`
+	FailStrongestTrend        int     `json:"fail_strongest_trend"`
+	FailWeakestTrend          int     `json:"fail_weakest_trend"`
+	FailStrongestRSPersist    int     `json:"fail_strongest_rs_persist"`
+	FailWeakestRSPersist      int     `json:"fail_weakest_rs_persist"`
 	PassedAllGates            int     `json:"passed_all_gates"`
 	AvgDollarVolFromCSV       int     `json:"avg_dollar_vol_from_csv"`
 	AvgDollarVolDerived       int     `json:"avg_dollar_vol_derived"`
@@ -135,8 +174,9 @@ type Scanner struct {
 	endNs       int64
 
 	// historical replay control
-	stopAtNs int64
-	maxEvent uint64
+	stopAtNs                  int64
+	maxEvent                  uint64
+	captureHistoricalTimeline bool
 
 	snap atomic.Value // TopSnapshot
 
@@ -169,13 +209,17 @@ func NewScanner(log *slog.Logger, cfg Config, watchlist map[string]struct{}, bas
 
 	nowNY := time.Now().In(loc)
 	empty := TopSnapshot{
-		Mode:          "live",
-		Timezone:      cfg.Market.Timezone,
-		GeneratedAt:   nowNY,
-		GeneratedAtNY: nowNY.Format("2006-01-02 15:04:05 MST"),
-		AsOfNY:        nowNY.Format("2006-01-02 15:04 MST"),
-		Benchmark:     strings.ToUpper(cfg.Databento.BenchmarkSymbol),
-		Candidates:    []Candidate{},
+		Mode:                "live",
+		Timezone:            cfg.Market.Timezone,
+		GeneratedAt:         nowNY,
+		GeneratedAtNY:       nowNY.Format("2006-01-02 15:04:05 MST"),
+		AsOfNY:              nowNY.Format("2006-01-02 15:04:05 MST"),
+		Benchmark:           strings.ToUpper(cfg.Databento.BenchmarkSymbol),
+		Candidates:          []Candidate{},
+		StrongestCandidates: []Candidate{},
+		WeakestCandidates:   []Candidate{},
+		HardPassCandidates:  []Candidate{},
+		BacksideCandidates:  []Candidate{},
 	}
 	s.snap.Store(empty)
 	return s
@@ -208,6 +252,14 @@ func (s *Scanner) GetSnapshotAsOf(asOfNY time.Time) (TopSnapshot, bool) {
 	return TopSnapshot{}, false
 }
 
+func (s *Scanner) GetHistory() []TopSnapshot {
+	s.historyMu.RLock()
+	defer s.historyMu.RUnlock()
+	out := make([]TopSnapshot, len(s.history))
+	copy(out, s.history)
+	return out
+}
+
 func (s *Scanner) Run(ctx context.Context) error {
 	return s.runStream(ctx, time.Time{}, false, time.Time{})
 }
@@ -237,6 +289,41 @@ func BuildHistoricalSnapshotWithScan(ctx context.Context, log *slog.Logger, cfg 
 		"candidates", len(replay.GetSnapshot().Candidates),
 	)
 	return replay.GetSnapshot(), nil
+}
+
+func BuildHistoricalTimelineWithScan(ctx context.Context, log *slog.Logger, cfg Config, watchlist map[string]struct{}, baselines map[string]Baseline, dayNY time.Time, scanOverride *ScanConfig) ([]TopSnapshot, error) {
+	replay := NewScanner(log, cfg, watchlist, baselines)
+	if scanOverride != nil {
+		replay.cfg.Scan = *scanOverride
+	}
+	replay.captureHistoricalTimeline = true
+
+	dayNY = dayNY.In(replay.loc)
+	start := sessionOpenFor(dayNY, cfg, replay.loc)
+	end := sessionCloseFor(dayNY, cfg, replay.loc)
+
+	replay.log.Info(
+		"historical timeline starting",
+		"dataset", cfg.Databento.Dataset,
+		"schema", cfg.Databento.Schema,
+		"benchmark", strings.ToUpper(cfg.Databento.BenchmarkSymbol),
+		"start_ny", start.Format("2006-01-02 15:04:05 MST"),
+		"end_ny", end.Format("2006-01-02 15:04:05 MST"),
+	)
+	if err := replay.runStream(ctx, start, true, end); err != nil {
+		return nil, err
+	}
+
+	out := replay.GetHistory()
+	if len(out) == 0 {
+		out = []TopSnapshot{replay.GetSnapshot()}
+	}
+	replay.log.Info(
+		"historical timeline completed",
+		"date_ny", dayNY.Format("2006-01-02"),
+		"snapshots", len(out),
+	)
+	return out, nil
 }
 
 func (s *Scanner) ComputeSnapshotWithScan(evalNY time.Time, mode string, scan ScanConfig) TopSnapshot {
@@ -316,6 +403,7 @@ func (s *Scanner) runStream(ctx context.Context, start time.Time, historical boo
 	lastRank := time.Now()
 	lastProgressLog := time.Now()
 	stopReason := "stream_end"
+	nextHistoryMinute := start.In(s.loc).Truncate(time.Minute)
 
 	for scanner.Next() {
 		if err := scanner.Visit(visitor); err != nil {
@@ -323,7 +411,16 @@ func (s *Scanner) runStream(ctx context.Context, start time.Time, historical boo
 		}
 
 		if historical {
-			if int64(atomic.LoadUint64(&s.maxEvent)) >= s.stopAtNs {
+			maxEvent := int64(atomic.LoadUint64(&s.maxEvent))
+			if s.captureHistoricalTimeline && maxEvent > 0 {
+				eventMinute := time.Unix(0, maxEvent).In(s.loc).Truncate(time.Minute)
+				limit := asOfNY.In(s.loc).Truncate(time.Minute)
+				for !nextHistoryMinute.After(eventMinute) && !nextHistoryMinute.After(limit) {
+					s.publish(s.computeSnapshotAt(nextHistoryMinute, "historical"), true)
+					nextHistoryMinute = nextHistoryMinute.Add(time.Minute)
+				}
+			}
+			if maxEvent >= s.stopAtNs {
 				stopReason = "as_of_reached"
 				break
 			}
@@ -355,6 +452,14 @@ func (s *Scanner) runStream(ctx context.Context, start time.Time, historical boo
 
 	if err := scanner.Error(); err != nil && !isExpectedScannerStopError(err, historical) {
 		return err
+	}
+
+	if historical && s.captureHistoricalTimeline {
+		limit := asOfNY.In(s.loc).Truncate(time.Minute)
+		for !nextHistoryMinute.After(limit) {
+			s.publish(s.computeSnapshotAt(nextHistoryMinute, "historical"), true)
+			nextHistoryMinute = nextHistoryMinute.Add(time.Minute)
+		}
 	}
 
 	var finalSnap TopSnapshot
@@ -557,6 +662,28 @@ func (s *Scanner) onTrade(st *SymbolState, ts uint64, pxN int64, size uint64) {
 		return
 	}
 
+	minuteNs := minuteBucketNs(int64(ts))
+	if st.BarMinuteNs == 0 {
+		st.BarMinuteNs = minuteNs
+		st.BarHighPxN = pxN
+		st.BarLowPxN = pxN
+		st.BarClosePxN = pxN
+	} else if minuteNs > st.BarMinuteNs {
+		s.closeCurrentBar(st)
+		st.BarMinuteNs = minuteNs
+		st.BarHighPxN = pxN
+		st.BarLowPxN = pxN
+		st.BarClosePxN = pxN
+	} else {
+		if pxN > st.BarHighPxN {
+			st.BarHighPxN = pxN
+		}
+		if st.BarLowPxN == 0 || pxN < st.BarLowPxN {
+			st.BarLowPxN = pxN
+		}
+		st.BarClosePxN = pxN
+	}
+
 	if st.OpenPxN == 0 {
 		st.OpenPxN = pxN
 		st.HighPxN = pxN
@@ -573,6 +700,30 @@ func (s *Scanner) onTrade(st *SymbolState, ts uint64, pxN int64, size uint64) {
 
 	st.CumVol += size
 	st.CumNotional += float64(size) * (float64(pxN) / pxScale)
+}
+
+func minuteBucketNs(tsNs int64) int64 {
+	return (tsNs / int64(time.Minute)) * int64(time.Minute)
+}
+
+func (s *Scanner) closeCurrentBar(st *SymbolState) {
+	if st.BarMinuteNs == 0 || st.BarClosePxN <= 0 || st.BarHighPxN <= 0 || st.BarLowPxN <= 0 {
+		return
+	}
+	vwap := 0.0
+	if st.CumVol > 0 {
+		vwap = st.CumNotional / float64(st.CumVol)
+	}
+	st.Bars = append(st.Bars, intradayBar{
+		MinuteStartNs: st.BarMinuteNs,
+		HighPxN:       st.BarHighPxN,
+		LowPxN:        st.BarLowPxN,
+		ClosePxN:      st.BarClosePxN,
+		VWAP:          vwap,
+	})
+	if len(st.Bars) > maxIntradayBars {
+		st.Bars = st.Bars[len(st.Bars)-maxIntradayBars:]
+	}
 }
 
 func (s *Scanner) ensureSessionFor(t time.Time) {
@@ -615,6 +766,11 @@ func (s *Scanner) ensureSessionFor(t time.Time) {
 		st.CumNotional = 0
 		st.FirstTradeTs = 0
 		st.LastTradeTs = 0
+		st.BarMinuteNs = 0
+		st.BarHighPxN = 0
+		st.BarLowPxN = 0
+		st.BarClosePxN = 0
+		st.Bars = st.Bars[:0]
 	}
 }
 
@@ -627,6 +783,17 @@ func sessionOpenFor(asOfNY time.Time, cfg Config, loc *time.Location) time.Time 
 	}
 	oh, om := parseHHMM(openStr, 9, 30)
 	return time.Date(y, m, d, oh, om, 0, 0, loc)
+}
+
+func sessionCloseFor(asOfNY time.Time, cfg Config, loc *time.Location) time.Time {
+	asOfNY = asOfNY.In(loc)
+	y, m, d := asOfNY.Date()
+	closeStr := cfg.Market.SessionClose
+	if cfg.Market.IncludeExtendedHours {
+		closeStr = cfg.Market.ExtendedClose
+	}
+	ch, cm := parseHHMM(closeStr, 16, 0)
+	return time.Date(y, m, d, ch, cm, 0, 0, loc)
 }
 
 func parseHHMM(v string, defH, defM int) (int, int) {
@@ -685,6 +852,20 @@ type featureRow struct {
 	adrExpansion float64
 
 	retFromOpen float64
+	relStrength float64
+	rs5m        float64
+	rs15m       float64
+	rs30m       float64
+
+	sessionVWAP      float64
+	vwapSlope5m      float64
+	isAboveVWAP      bool
+	isBelowVWAP      bool
+	hasHigherHighLow bool
+	hasLowerHighLow  bool
+	pullbackLong     float64
+	failedReclaim    float64
+	downsideExtend   float64
 
 	updatedMsAgo int64
 }
@@ -729,6 +910,337 @@ func spreadBpsForMinPrice(scan ScanConfig, minPrice float64) float64 {
 	return 0
 }
 
+func priceAtOrBefore(st *SymbolState, targetNs int64, nowNs int64) (float64, bool) {
+	if st == nil || st.LastPxN <= 0 {
+		return 0, false
+	}
+	if targetNs >= nowNs {
+		return float64(st.LastPxN) / pxScale, true
+	}
+	for i := len(st.Bars) - 1; i >= 0; i-- {
+		barCloseNs := st.Bars[i].MinuteStartNs + int64(time.Minute)
+		if barCloseNs <= targetNs && st.Bars[i].ClosePxN > 0 {
+			return float64(st.Bars[i].ClosePxN) / pxScale, true
+		}
+	}
+	if st.OpenPxN > 0 {
+		return float64(st.OpenPxN) / pxScale, true
+	}
+	return 0, false
+}
+
+func vwapAtOrBefore(st *SymbolState, targetNs int64) (float64, bool) {
+	if st == nil {
+		return 0, false
+	}
+	for i := len(st.Bars) - 1; i >= 0; i-- {
+		barCloseNs := st.Bars[i].MinuteStartNs + int64(time.Minute)
+		if barCloseNs <= targetNs && st.Bars[i].VWAP > 0 {
+			return st.Bars[i].VWAP, true
+		}
+	}
+	return 0, false
+}
+
+func (s *Scanner) relStrengthWindow(stock *SymbolState, benchmark *SymbolState, nowNs int64, lookback time.Duration) (float64, bool) {
+	if stock == nil || benchmark == nil || stock.LastPxN <= 0 || benchmark.LastPxN <= 0 {
+		return 0, false
+	}
+	targetNs := nowNs - int64(lookback)
+	stockThen, okStock := priceAtOrBefore(stock, targetNs, nowNs)
+	benchThen, okBench := priceAtOrBefore(benchmark, targetNs, nowNs)
+	if !okStock || !okBench || stockThen <= 0 || benchThen <= 0 {
+		return 0, false
+	}
+	stockNow := float64(stock.LastPxN) / pxScale
+	benchNow := float64(benchmark.LastPxN) / pxScale
+	stockRet := (stockNow - stockThen) / stockThen
+	benchRet := (benchNow - benchThen) / benchThen
+	return stockRet - benchRet, true
+}
+
+func (s *Scanner) trendState(st *SymbolState, price float64, nowNs int64) (sessionVWAP float64, vwapSlope5m float64, isAboveVWAP bool, isBelowVWAP bool, hasHigherHighLow bool, hasLowerHighLow bool) {
+	if st == nil {
+		return
+	}
+	if st.CumVol > 0 {
+		sessionVWAP = st.CumNotional / float64(st.CumVol)
+	}
+	if sessionVWAP > 0 {
+		isAboveVWAP = price > sessionVWAP
+		isBelowVWAP = price < sessionVWAP
+		if pastVWAP, ok := vwapAtOrBefore(st, nowNs-int64(vwapSlopeLookback)); ok {
+			vwapSlope5m = sessionVWAP - pastVWAP
+		} else if pastVWAP, ok := vwapAtOrBefore(st, nowNs-int64(2*time.Minute)); ok {
+			vwapSlope5m = sessionVWAP - pastVWAP
+		}
+	}
+	if st.BarHighPxN <= 0 || st.BarLowPxN <= 0 || len(st.Bars) < 2 {
+		return
+	}
+	n := len(st.Bars)
+	h0 := st.BarHighPxN
+	h1 := st.Bars[n-1].HighPxN
+	h2 := st.Bars[n-2].HighPxN
+	l0 := st.BarLowPxN
+	l1 := st.Bars[n-1].LowPxN
+	l2 := st.Bars[n-2].LowPxN
+	hasHigherHighLow = h0 > h1 && h1 > h2 && l0 > l1 && l1 > l2
+	hasLowerHighLow = h0 < h1 && h1 < h2 && l0 < l1 && l1 < l2
+	return
+}
+
+func directionalContext(st *SymbolState, price float64, sessionVWAP float64) (pullbackLong float64, failedReclaim float64, downsideExtend float64) {
+	if st == nil || sessionVWAP <= 0 || price <= 0 {
+		return 0, 0, 0
+	}
+
+	distFromVWAP := (price - sessionVWAP) / sessionVWAP
+	aboveVWAP := 0.0
+	belowVWAP := 0.0
+	if distFromVWAP > 0 {
+		aboveVWAP = 1.0
+	}
+	if distFromVWAP < 0 {
+		belowVWAP = 1.0
+	}
+
+	prevHigh := 0.0
+	prevLow := 0.0
+	if len(st.Bars) > 0 {
+		last := st.Bars[len(st.Bars)-1]
+		if last.HighPxN > 0 {
+			prevHigh = float64(last.HighPxN) / pxScale
+		}
+		if last.LowPxN > 0 {
+			prevLow = float64(last.LowPxN) / pxScale
+		}
+	}
+	curHigh := 0.0
+	if st.BarHighPxN > 0 {
+		curHigh = float64(st.BarHighPxN) / pxScale
+	}
+
+	breakoutHold := 0.0
+	if prevHigh > 0 {
+		if price >= prevHigh {
+			breakoutHold = 1.0
+		} else if price >= prevHigh*0.997 {
+			breakoutHold = 0.5
+		}
+	}
+
+	pullbackBand := 0.0
+	if distFromVWAP > 0 {
+		// Prefer names holding above VWAP without being over-extended.
+		pullbackBand = clamp01(1.0 - math.Abs(distFromVWAP-0.006)/0.020)
+	}
+	pullbackLong = clamp01(0.45*aboveVWAP + 0.35*breakoutHold + 0.20*pullbackBand)
+
+	reclaimFail := 0.0
+	if curHigh > 0 {
+		if curHigh < sessionVWAP {
+			reclaimFail = 1.0
+		} else if curHigh < sessionVWAP*1.001 {
+			reclaimFail = 0.5
+		}
+	}
+	lowBreak := 0.0
+	if prevLow > 0 {
+		if price <= prevLow {
+			lowBreak = 1.0
+		} else if price <= prevLow*1.003 {
+			lowBreak = 0.5
+		}
+	}
+	failedReclaim = clamp01(0.55*reclaimFail + 0.25*belowVWAP + 0.20*lowBreak)
+
+	downDist := (sessionVWAP - price) / sessionVWAP
+	if downDist > 0 {
+		downsideExtend = clamp01(1.0 - math.Abs(downDist-0.008)/0.025)
+	}
+	return pullbackLong, failedReclaim, downsideExtend
+}
+
+func liquidityStabilityScore(dollarVolPerMin float64, avgDollarVol10d float64) float64 {
+	if dollarVolPerMin <= 0 || avgDollarVol10d <= 0 {
+		return 0
+	}
+	avgPerMin := avgDollarVol10d / 390.0
+	if avgPerMin <= 0 {
+		return 0
+	}
+	ratio := dollarVolPerMin / avgPerMin
+	return clamp01(ratio / 2.0)
+}
+
+func barsWithCurrent(st *SymbolState) []intradayBar {
+	if st == nil {
+		return nil
+	}
+	out := make([]intradayBar, 0, len(st.Bars)+1)
+	out = append(out, st.Bars...)
+	if st.BarMinuteNs > 0 && st.BarHighPxN > 0 && st.BarLowPxN > 0 && st.BarClosePxN > 0 {
+		vwap := 0.0
+		if st.CumVol > 0 {
+			vwap = st.CumNotional / float64(st.CumVol)
+		}
+		out = append(out, intradayBar{
+			MinuteStartNs: st.BarMinuteNs,
+			HighPxN:       st.BarHighPxN,
+			LowPxN:        st.BarLowPxN,
+			ClosePxN:      st.BarClosePxN,
+			VWAP:          vwap,
+		})
+	}
+	return out
+}
+
+func emaLastClose(bars []intradayBar, period int) (float64, bool) {
+	if period <= 1 || len(bars) < period {
+		return 0, false
+	}
+	start := len(bars) - period
+	ema := float64(bars[start].ClosePxN) / pxScale
+	if ema <= 0 {
+		return 0, false
+	}
+	alpha := 2.0 / float64(period+1)
+	for i := start + 1; i < len(bars); i++ {
+		closePx := float64(bars[i].ClosePxN) / pxScale
+		if closePx <= 0 {
+			return 0, false
+		}
+		ema = alpha*closePx + (1.0-alpha)*ema
+	}
+	return ema, true
+}
+
+func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (float64, bool) {
+	if st == nil || st.LowPxN <= 0 || price <= 0 || sessionVWAP <= 0 {
+		return 0, false
+	}
+	bars := barsWithCurrent(st)
+	if len(bars) < 10 {
+		return 0, false
+	}
+
+	lod := float64(st.LowPxN) / pxScale
+	if lod <= 0 || sessionVWAP <= lod || price <= lod {
+		return 0, false
+	}
+	midpoint := lod + 0.5*(sessionVWAP-lod)
+	if price > midpoint {
+		return 0, false
+	}
+
+	// Starter low bar for backside potential: a 1-minute swing-low style bar.
+	starterLowIdx := -1
+	for i := 0; i < len(bars)-3; i++ {
+		low := bars[i].LowPxN
+		if low <= 0 {
+			continue
+		}
+		leftOK := i == 0 || low <= bars[i-1].LowPxN
+		rightOK := low <= bars[i+1].LowPxN
+		if leftOK && rightOK {
+			starterLowIdx = i
+		}
+	}
+	if starterLowIdx < 0 {
+		return 0, false
+	}
+
+	hhCount := 0
+	hlCount := 0
+	latestHHIdx := -1
+	latestHLIdx := -1
+	for i := starterLowIdx + 1; i < len(bars); i++ {
+		if bars[i].HighPxN > bars[i-1].HighPxN {
+			hhCount++
+			latestHHIdx = i
+		}
+		if bars[i].LowPxN > bars[i-1].LowPxN {
+			hlCount++
+			latestHLIdx = i
+		}
+	}
+	if hhCount < 1 || hlCount < 1 {
+		return 0, false
+	}
+
+	if latestHHIdx < 0 || latestHLIdx < 0 {
+		return 0, false
+	}
+
+	earlyIdx := latestHHIdx
+	lateIdx := latestHLIdx
+	if earlyIdx > lateIdx {
+		earlyIdx, lateIdx = lateIdx, earlyIdx
+	}
+	// Exactly one candle between the identified higher-high and higher-low.
+	if lateIdx-earlyIdx != 2 {
+		return 0, false
+	}
+	if earlyIdx <= starterLowIdx || lateIdx <= starterLowIdx {
+		return 0, false
+	}
+	// Require one bar after HH/HL has formed.
+	if lateIdx+1 >= len(bars) {
+		return 0, false
+	}
+	postIdx := lateIdx + 1
+	if postIdx <= starterLowIdx {
+		return 0, false
+	}
+	midIdx := earlyIdx + 1
+	midHigh := float64(bars[midIdx].HighPxN) / pxScale
+	midLow := float64(bars[midIdx].LowPxN) / pxScale
+	if midHigh <= 0 || midLow <= 0 || midLow <= lod {
+		return 0, false
+	}
+	consolRangePct := (midHigh - midLow) / price
+	if consolRangePct > 0.0035 {
+		return 0, false
+	}
+
+	ema9, okEMA := emaLastClose(bars, 9)
+	if !okEMA {
+		return 0, false
+	}
+	aboveEMA := 0
+	for i := max(0, len(bars)-3); i < len(bars); i++ {
+		closePx := float64(bars[i].ClosePxN) / pxScale
+		if closePx >= ema9 {
+			aboveEMA++
+		}
+	}
+	if aboveEMA < 2 {
+		return 0, false
+	}
+
+	steps := float64(len(bars) - (starterLowIdx + 1))
+	if steps <= 0 {
+		return 0, false
+	}
+	consistency := clamp01(0.5*(float64(hhCount)/steps) + 0.5*(float64(hlCount)/steps))
+	tightness := clamp01(1.0 - (consolRangePct / 0.0035))
+	emaSupport := clamp01(float64(aboveEMA) / 3.0)
+	score := clamp01(0.45*consistency + 0.35*tightness + 0.20*emaSupport)
+	return score, true
+}
+
+func slopePctScore(vwapSlope5m float64, sessionVWAP float64, dir int) float64 {
+	if sessionVWAP <= 0 {
+		return 0
+	}
+	slopePct := vwapSlope5m / sessionVWAP
+	if dir < 0 {
+		slopePct = -slopePct
+	}
+	return clamp01(slopePct / 0.0025)
+}
+
 func (s *Scanner) computeSnapshotAt(evalNY time.Time, mode string) TopSnapshot {
 	return s.computeSnapshotAtWithScan(evalNY, mode, s.cfg.Scan)
 }
@@ -757,16 +1269,18 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	}
 
 	bench := strings.ToUpper(strings.TrimSpace(s.cfg.Databento.BenchmarkSymbol))
+	benchState := s.statesBySymbol[bench]
 	spyRet := 0.0
-	if spy, ok := s.statesBySymbol[bench]; ok && spy != nil && spy.OpenPxN > 0 && spy.LastPxN > 0 {
-		spyOpen := float64(spy.OpenPxN) / pxScale
-		spyLast := float64(spy.LastPxN) / pxScale
+	if benchState != nil && benchState.OpenPxN > 0 && benchState.LastPxN > 0 {
+		spyOpen := float64(benchState.OpenPxN) / pxScale
+		spyLast := float64(benchState.LastPxN) / pxScale
 		spyRet = (spyLast - spyOpen) / spyOpen
 	}
 
 	rows := make([]featureRow, 0, len(s.statesBySymbol))
 	logRvols := make([]float64, 0, len(s.statesBySymbol))
-	rsVals := make([]float64, 0, len(s.statesBySymbol))
+	rs5Vals := make([]float64, 0, len(s.statesBySymbol))
+	rs15Vals := make([]float64, 0, len(s.statesBySymbol))
 	debug := GateDebug{
 		SpreadCapBpsGE50: spreadBpsForMinPrice(scan, 50),
 		SpreadCapBpsGE10: spreadBpsForMinPrice(scan, 10),
@@ -829,6 +1343,20 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 			retFromOpen = (price - open) / open
 		}
 		relStrength := retFromOpen - spyRet
+		rs5m, okRS5 := s.relStrengthWindow(st, benchState, nowNs, rsWindow5m)
+		if !okRS5 {
+			rs5m = relStrength
+		}
+		rs15m, okRS15 := s.relStrengthWindow(st, benchState, nowNs, rsWindow15m)
+		if !okRS15 {
+			rs15m = relStrength
+		}
+		rs30m, okRS30 := s.relStrengthWindow(st, benchState, nowNs, rsWindow30m)
+		if !okRS30 {
+			rs30m = relStrength
+		}
+		sessionVWAP, vwapSlope5m, isAboveVWAP, isBelowVWAP, hasHigherHighLow, hasLowerHighLow := s.trendState(st, price, nowNs)
+		pullbackLong, failedReclaim, downsideExtend := directionalContext(st, price, sessionVWAP)
 		dollarVolPerMin := st.CumNotional / minutesElapsed
 		avgDollarVol10d := base.AvgDollarVol10d
 		if avgDollarVol10d > 0 {
@@ -842,30 +1370,44 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 		}
 
 		row := featureRow{
-			symbol:          st.Symbol,
-			price:           price,
-			bid:             bid,
-			ask:             ask,
-			spreadPct:       spreadPct,
-			spreadBps:       spreadBps,
-			cumVol:          st.CumVol,
-			rvol:            rvol,
-			logRvol:         logRvol,
-			dollarVolPerMin: dollarVolPerMin,
-			avgDollarVol10d: avgDollarVol10d,
-			open:            open,
-			high:            high,
-			low:             low,
-			rangePct:        rangePct,
-			adrPct10d:       base.AdrPct10d,
-			adrExpansion:    adrExpansion,
-			retFromOpen:     retFromOpen,
-			updatedMsAgo:    updatedMsAgo,
+			symbol:           st.Symbol,
+			price:            price,
+			bid:              bid,
+			ask:              ask,
+			spreadPct:        spreadPct,
+			spreadBps:        spreadBps,
+			cumVol:           st.CumVol,
+			rvol:             rvol,
+			logRvol:          logRvol,
+			dollarVolPerMin:  dollarVolPerMin,
+			avgDollarVol10d:  avgDollarVol10d,
+			open:             open,
+			high:             high,
+			low:              low,
+			rangePct:         rangePct,
+			adrPct10d:        base.AdrPct10d,
+			adrExpansion:     adrExpansion,
+			retFromOpen:      retFromOpen,
+			relStrength:      relStrength,
+			rs5m:             rs5m,
+			rs15m:            rs15m,
+			rs30m:            rs30m,
+			sessionVWAP:      sessionVWAP,
+			vwapSlope5m:      vwapSlope5m,
+			isAboveVWAP:      isAboveVWAP,
+			isBelowVWAP:      isBelowVWAP,
+			hasHigherHighLow: hasHigherHighLow,
+			hasLowerHighLow:  hasLowerHighLow,
+			pullbackLong:     pullbackLong,
+			failedReclaim:    failedReclaim,
+			downsideExtend:   downsideExtend,
+			updatedMsAgo:     updatedMsAgo,
 		}
 
 		rows = append(rows, row)
 		logRvols = append(logRvols, logRvol)
-		rsVals = append(rsVals, relStrength)
+		rs5Vals = append(rs5Vals, rs5m)
+		rs15Vals = append(rs15Vals, rs15m)
 
 		if row.cumVol > debug.MaxCumVol {
 			debug.MaxCumVol = row.cumVol
@@ -886,14 +1428,24 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	}
 
 	meanLR, stdLR := meanStd(logRvols)
-	meanRS, stdRS := meanStd(rsVals)
+	meanRS5, stdRS5 := meanStd(rs5Vals)
+	meanRS15, stdRS15 := meanStd(rs15Vals)
 
-	h := &candHeap{}
-	heap.Init(h)
+	strongest := &candHeap{}
+	weakest := &candHeap{}
+	backside := &candHeap{}
+	heap.Init(strongest)
+	heap.Init(weakest)
+	heap.Init(backside)
 
 	ranked := 0
-	for i, row := range rows {
-		relStrength := rsVals[i]
+	strongestRanked := 0
+	weakestRanked := 0
+	hardPassRanked := 0
+	backsideRanked := 0
+	hardPassOut := make([]Candidate, 0, 256)
+	for _, row := range rows {
+		relStrength := row.relStrength
 		debug.RowsEvaluated++
 
 		if row.updatedMsAgo > scan.MaxStaleness.Duration.Milliseconds() {
@@ -920,24 +1472,52 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 			debug.FailSpreadCap++
 			continue
 		}
+		// Additional spread stability check: reject names that exceed scoring spread budget.
+		if row.spreadBps > scan.Scoring.SpreadBpsCap {
+			debug.FailSpreadCap++
+			continue
+		}
 		debug.PassedAllGates++
 
 		rvolScore := gaussianPercentile(zscore(row.logRvol, meanLR, stdLR))
-		rsScore := gaussianPercentile(zscore(relStrength, meanRS, stdRS))
-		rangeScore := clamp01(row.adrExpansion / scan.Scoring.RangeExpansionCap)
-		liqScore := clamp01(row.dollarVolPerMin / scan.Scoring.LiquidityTargetPerMin)
+		rs5Z := zscore(row.rs5m, meanRS5, stdRS5)
+		rs15Z := zscore(row.rs15m, meanRS15, stdRS15)
+		rsPos15 := gaussianPercentile(rs15Z)
+		rsPos5 := gaussianPercentile(rs5Z)
+		rsNeg15 := gaussianPercentile(-rs15Z)
+		rsNeg5 := gaussianPercentile(-rs5Z)
+		liqFlow := clamp01(row.dollarVolPerMin / scan.Scoring.LiquidityTargetPerMin)
+		liqStable := liquidityStabilityScore(row.dollarVolPerMin, row.avgDollarVol10d)
+		liquidityScore := clamp01(0.60*liqFlow + 0.40*liqStable)
 		spreadScore := clamp01(1.0 - (row.spreadBps / scan.Scoring.SpreadBpsCap))
+		longVWAPTrend := clamp01(
+			0.45*slopePctScore(row.vwapSlope5m, row.sessionVWAP, +1) +
+				0.35*row.pullbackLong +
+				0.20*boolScore(row.hasHigherHighLow),
+		)
+		shortVWAPTrend := clamp01(
+			0.45*slopePctScore(row.vwapSlope5m, row.sessionVWAP, -1) +
+				0.35*row.failedReclaim +
+				0.20*boolScore(row.hasLowerHighLow),
+		)
+		shortSpreadControlled := clamp01(0.70*spreadScore + 0.30*row.downsideExtend)
 
-		w := scan.Scoring.Weights
-		score := w.RVOL*rvolScore +
-			w.RelStrength*rsScore +
-			w.Range*rangeScore +
-			w.Liquidity*liqScore +
-			w.Spread*spreadScore
+		// Two-stage directional formulas.
+		strongestScore := 0.30*rsPos15 +
+			0.20*rsPos5 +
+			0.20*rvolScore +
+			0.15*longVWAPTrend +
+			0.10*liquidityScore +
+			0.05*spreadScore
+		weakestScore := 0.30*rsNeg15 +
+			0.20*rsNeg5 +
+			0.20*rvolScore +
+			0.15*shortVWAPTrend +
+			0.10*liquidityScore +
+			0.05*shortSpreadControlled
 
-		pushTopK(h, Candidate{
+		cand := Candidate{
 			Symbol:           row.symbol,
-			Score:            score,
 			Price:            row.price,
 			Bid:              row.bid,
 			Ask:              row.ask,
@@ -953,21 +1533,82 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 			RetFromOpen:      row.retFromOpen,
 			SpyRetFromOpen:   spyRet,
 			RelStrengthVsSpy: relStrength,
+			RS5mVsSpy:        row.rs5m,
+			RS15mVsSpy:       row.rs15m,
+			RS30mVsSpy:       row.rs30m,
+			SessionVWAP:      row.sessionVWAP,
+			VWAPSlope5m:      row.vwapSlope5m,
 			UpdatedMsAgo:     row.updatedMsAgo,
-		}, scan.TopK)
-		ranked++
+		}
+		cHardPass := cand
+		cHardPass.Score = math.Max(strongestScore, weakestScore)
+		hardPassOut = append(hardPassOut, cHardPass)
+		hardPassRanked++
+
+		st := s.statesBySymbol[row.symbol]
+		if backsideScore, ok := backsideSetupScore(st, row.price, row.sessionVWAP); ok {
+			c := cand
+			c.Score = backsideScore
+			pushTopK(backside, c, scan.TopK)
+			backsideRanked++
+		}
+
+		if relStrength > 0 {
+			if !row.isAboveVWAP || row.vwapSlope5m <= 0 || !row.hasHigherHighLow {
+				debug.FailStrongestTrend++
+				continue
+			}
+			if row.rs5m <= 0 || row.rs15m <= 0 || row.rs30m <= 0 {
+				debug.FailStrongestRSPersist++
+				continue
+			}
+			c := cand
+			c.Score = strongestScore
+			pushTopK(strongest, c, scan.TopK)
+			strongestRanked++
+			ranked++
+		}
+		if relStrength < 0 {
+			if !row.isBelowVWAP || row.vwapSlope5m >= 0 || !row.hasLowerHighLow {
+				debug.FailWeakestTrend++
+				continue
+			}
+			if row.rs5m >= 0 || row.rs15m >= 0 || row.rs30m >= 0 {
+				debug.FailWeakestRSPersist++
+				continue
+			}
+			c := cand
+			c.Score = weakestScore
+			pushTopK(weakest, c, scan.TopK)
+			weakestRanked++
+			ranked++
+		}
 	}
 
-	out := make([]Candidate, 0, h.Len())
-	for h.Len() > 0 {
-		out = append(out, heap.Pop(h).(Candidate))
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
-	for i := range out {
-		out[i].Rank = i + 1
-		if out[i].SpreadPct > s.maxSpreadPctForScan(out[i].Price, scan) {
+	strongestOut := drainRanked(strongest)
+	weakestOut := drainRanked(weakest)
+	backsideOut := drainRanked(backside)
+	for i := range strongestOut {
+		strongestOut[i].Rank = i + 1
+		if strongestOut[i].SpreadPct > s.maxSpreadPctForScan(strongestOut[i].Price, scan) {
 			debug.CandidateSpreadViolations++
 		}
+	}
+	for i := range weakestOut {
+		weakestOut[i].Rank = i + 1
+		if weakestOut[i].SpreadPct > s.maxSpreadPctForScan(weakestOut[i].Price, scan) {
+			debug.CandidateSpreadViolations++
+		}
+	}
+	for i := range backsideOut {
+		backsideOut[i].Rank = i + 1
+		if backsideOut[i].SpreadPct > s.maxSpreadPctForScan(backsideOut[i].Price, scan) {
+			debug.CandidateSpreadViolations++
+		}
+	}
+	sort.Slice(hardPassOut, func(i, j int) bool { return hardPassOut[i].Score > hardPassOut[j].Score })
+	for i := range hardPassOut {
+		hardPassOut[i].Rank = i + 1
 	}
 
 	message := ""
@@ -976,17 +1617,25 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	}
 
 	return TopSnapshot{
-		Mode:          mode,
-		Timezone:      s.cfg.Market.Timezone,
-		GeneratedAt:   evalNY,
-		GeneratedAtNY: evalNY.Format("2006-01-02 15:04:05 MST"),
-		AsOfNY:        evalNY.Format("2006-01-02 15:04 MST"),
-		Benchmark:     bench,
-		CountSeen:     len(rows),
-		CountRanked:   ranked,
-		Message:       message,
-		GateDebug:     debug,
-		Candidates:    out,
+		Mode:                mode,
+		Timezone:            s.cfg.Market.Timezone,
+		GeneratedAt:         evalNY,
+		GeneratedAtNY:       evalNY.Format("2006-01-02 15:04:05 MST"),
+		AsOfNY:              evalNY.Format("2006-01-02 15:04:05 MST"),
+		Benchmark:           bench,
+		CountSeen:           len(rows),
+		CountRanked:         ranked,
+		CountStrongest:      strongestRanked,
+		CountWeakest:        weakestRanked,
+		CountHardPass:       hardPassRanked,
+		CountBackside:       backsideRanked,
+		Message:             message,
+		GateDebug:           debug,
+		Candidates:          strongestOut,
+		StrongestCandidates: strongestOut,
+		WeakestCandidates:   weakestOut,
+		HardPassCandidates:  hardPassOut,
+		BacksideCandidates:  backsideOut,
 	}
 }
 
@@ -1032,6 +1681,13 @@ func clamp01(x float64) float64 {
 	return x
 }
 
+func boolScore(ok bool) float64 {
+	if ok {
+		return 1.0
+	}
+	return 0.0
+}
+
 type candHeap []Candidate
 
 func (h candHeap) Len() int            { return len(h) }
@@ -1059,6 +1715,15 @@ func pushTopK(h *candHeap, c Candidate, k int) {
 	}
 	heap.Pop(h)
 	heap.Push(h, c)
+}
+
+func drainRanked(h *candHeap) []Candidate {
+	out := make([]Candidate, 0, h.Len())
+	for h.Len() > 0 {
+		out = append(out, heap.Pop(h).(Candidate))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	return out
 }
 
 func isExpectedScannerStopError(err error, historical bool) bool {

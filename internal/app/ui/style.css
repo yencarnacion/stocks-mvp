@@ -210,18 +210,24 @@ button.ghost {
 }
 
 .tab-btn {
-  background: #f4f8fb;
-  color: #36516a;
+  background: #edf3f7;
+  color: #2f4a62;
   border: 1px solid var(--line);
   border-bottom: 0;
   border-radius: 9px 9px 0 0;
   padding: 8px 12px;
+  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.tab-btn:hover {
+  background: #e2ebf2;
 }
 
 .tab-btn.active {
-  background: #ffffff;
-  color: #0a7a73;
-  border-color: #bfd3de;
+  background: linear-gradient(180deg, #173a52, #102838);
+  color: #f1f8fd;
+  border-color: #102838;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 2px 8px rgba(9, 31, 49, 0.22);
 }
 
 table {

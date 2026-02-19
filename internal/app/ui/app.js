@@ -11,6 +11,8 @@ let tickerURLTemplate = '';
 let activeTab = 'strongest';
 let lastSnapshot = null;
 let backsideHistory = [];
+let backsideHistoryByAsOf = new Map();
+let backsideHistoryDateNY = '';
 let backsideHistoryKnownKeys = new Set();
 let backsideHistoryNewKeys = new Set();
 let hasBacksideHistoryBaseline = false;
@@ -387,7 +389,7 @@ function updateTabLabels(data) {
   const rvolCount = (data?.rvol_candidates || []).length;
   const hpCount = (data?.hard_pass_candidates || []).length;
   const backsideCount = (data?.backside_candidates || []).length;
-  const backsideHistoryCount = (backsideHistory || []).length;
+  const backsideHistoryCount = (backsideHistory || []).reduce((sum, item) => sum + ((item.rows || []).length), 0);
   if (qs('tab-strongest')) qs('tab-strongest').textContent = `Strongest (${strongestCount})`;
   if (qs('tab-weakest')) qs('tab-weakest').textContent = `Weakest (${weakestCount})`;
   if (qs('tab-rvol')) qs('tab-rvol').textContent = `RVOL (${rvolCount})`;
@@ -396,12 +398,18 @@ function updateTabLabels(data) {
   if (qs('tab-backside-history')) qs('tab-backside-history').textContent = `Backside Historical (${backsideHistoryCount})`;
 }
 
+function resetBacksideHistoryState() {
+  backsideHistory = [];
+  backsideHistoryByAsOf = new Map();
+  backsideHistoryDateNY = '';
+  backsideHistoryKnownKeys = new Set();
+  backsideHistoryNewKeys = new Set();
+  hasBacksideHistoryBaseline = false;
+}
+
 async function refreshBacksideHistory(mode) {
   if (mode !== 'live') {
-    backsideHistory = [];
-    backsideHistoryKnownKeys = new Set();
-    backsideHistoryNewKeys = new Set();
-    hasBacksideHistoryBaseline = false;
+    resetBacksideHistoryState();
     return 0;
   }
   const params = new URLSearchParams({ mode: 'live' });
@@ -414,25 +422,63 @@ async function refreshBacksideHistory(mode) {
     throw new Error(await res.text());
   }
   const data = await res.json();
-  const items = Array.isArray(data.items) ? [...data.items].reverse() : [];
+  const items = Array.isArray(data.items) ? data.items : [];
+  const nextDateNY = String(data.date_ny || date || '').trim();
+  if (nextDateNY && backsideHistoryDateNY && nextDateNY !== backsideHistoryDateNY) {
+    resetBacksideHistoryState();
+  }
+  if (nextDateNY && !backsideHistoryDateNY) {
+    backsideHistoryDateNY = nextDateNY;
+  }
+
+  const newlyAdded = new Set();
+  for (const item of items) {
+    const asOf = String(item.as_of_ny || '').trim();
+    if (!asOf) {
+      continue;
+    }
+    const existing = backsideHistoryByAsOf.get(asOf) || {
+      time_label: item.time_label || '',
+      as_of_ny: asOf,
+      rows: [],
+    };
+    if (item.time_label) {
+      existing.time_label = item.time_label;
+    }
+
+    const rowKeys = new Set((existing.rows || []).map((row) => `${asOf}|${row.symbol || ''}`));
+    for (const c of item.rows || []) {
+      const key = `${asOf}|${c.symbol || ''}`;
+      if (!rowKeys.has(key)) {
+        existing.rows.push(c);
+        rowKeys.add(key);
+        if (hasBacksideHistoryBaseline && !backsideHistoryKnownKeys.has(key)) {
+          newlyAdded.add(key);
+        }
+      }
+    }
+    existing.rows.sort((a, b) => {
+      const ar = Number(a?.rank ?? 0);
+      const br = Number(b?.rank ?? 0);
+      if (ar !== br) return ar - br;
+      return String(a?.symbol || '').localeCompare(String(b?.symbol || ''));
+    });
+    backsideHistoryByAsOf.set(asOf, existing);
+  }
+
+  backsideHistory = Array.from(backsideHistoryByAsOf.values()).sort((a, b) => {
+    const ak = String(a?.as_of_ny || '');
+    const bk = String(b?.as_of_ny || '');
+    if (ak === bk) return 0;
+    return ak < bk ? 1 : -1;
+  });
 
   const nextKnown = new Set();
-  for (const item of items) {
+  for (const item of backsideHistory) {
     for (const c of item.rows || []) {
       nextKnown.add(`${item.as_of_ny || ''}|${c.symbol || ''}`);
     }
   }
-
-  const newlyAdded = new Set();
-  if (hasBacksideHistoryBaseline) {
-    for (const k of nextKnown) {
-      if (!backsideHistoryKnownKeys.has(k)) {
-        newlyAdded.add(k);
-      }
-    }
-  }
-
-  backsideHistory = items;
   backsideHistoryNewKeys = newlyAdded;
   backsideHistoryKnownKeys = nextKnown;
   hasBacksideHistoryBaseline = true;
@@ -541,10 +587,7 @@ async function refresh() {
       }
     } catch (histErr) {
       console.error(histErr);
-      backsideHistory = [];
-      backsideHistoryKnownKeys = new Set();
-      backsideHistoryNewKeys = new Set();
-      hasBacksideHistoryBaseline = false;
+      resetBacksideHistoryState();
     }
 
     const gateSuffix = built.gateChanges > 0 ? ` | Gate overrides: ${built.gateChanges}` : '';
@@ -565,7 +608,7 @@ async function refresh() {
   } catch (err) {
     console.error(err);
     lastSnapshot = null;
-    backsideHistory = [];
+    resetBacksideHistoryState();
     lastBacksideSignature = '';
     hasBacksideSignatureBaseline = false;
     updateTabLabels(null);

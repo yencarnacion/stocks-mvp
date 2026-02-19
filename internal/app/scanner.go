@@ -261,7 +261,8 @@ func (s *Scanner) GetHistory() []TopSnapshot {
 }
 
 func (s *Scanner) Run(ctx context.Context) error {
-	return s.runStream(ctx, time.Time{}, false, time.Time{})
+	nowNY := time.Now().In(s.loc)
+	return s.runStream(ctx, liveReplayStartFor(nowNY, s.cfg, s.loc), false, time.Time{})
 }
 
 func BuildHistoricalSnapshot(ctx context.Context, log *slog.Logger, cfg Config, watchlist map[string]struct{}, baselines map[string]Baseline, asOfNY time.Time) (TopSnapshot, error) {
@@ -783,6 +784,15 @@ func sessionOpenFor(asOfNY time.Time, cfg Config, loc *time.Location) time.Time 
 	}
 	oh, om := parseHHMM(openStr, 9, 30)
 	return time.Date(y, m, d, oh, om, 0, 0, loc)
+}
+
+func liveReplayStartFor(nowNY time.Time, cfg Config, loc *time.Location) time.Time {
+	nowNY = nowNY.In(loc)
+	sessionOpen := sessionOpenFor(nowNY, cfg, loc)
+	if !nowNY.Before(sessionOpen) {
+		return sessionOpen
+	}
+	return time.Time{}
 }
 
 func sessionCloseFor(asOfNY time.Time, cfg Config, loc *time.Location) time.Time {

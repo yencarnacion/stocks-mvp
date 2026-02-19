@@ -259,16 +259,11 @@ func collectBacksideHistoryItems(history []TopSnapshot, targetDate string, loc *
 	}
 
 	out := make([]BacksideHistoryItem, 0, len(history))
-	lastSignature := ""
 	for _, snap := range history {
 		if snap.GeneratedAt.In(loc).Format("2006-01-02") != targetDate {
 			continue
 		}
-
-		nextSignature := backsideSignature(snap.BacksideCandidates)
-		triggered := lastSignature != "" && nextSignature != lastSignature
-		lastSignature = nextSignature
-		if !triggered || len(snap.BacksideCandidates) == 0 {
+		if len(snap.BacksideCandidates) == 0 {
 			continue
 		}
 
@@ -281,17 +276,6 @@ func collectBacksideHistoryItems(history []TopSnapshot, targetDate string, loc *
 		})
 	}
 	return out
-}
-
-func backsideSignature(rows []Candidate) string {
-	if len(rows) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(rows))
-	for _, c := range rows {
-		parts = append(parts, c.Symbol+":"+strconv.Itoa(c.Rank))
-	}
-	return strings.Join(parts, "|")
 }
 
 func (s *Server) historicalSnapshot(ctx context.Context, asOfNY time.Time, scan *ScanConfig) (TopSnapshot, error) {

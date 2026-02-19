@@ -4,6 +4,7 @@ let loadingStartedAt = 0;
 let clockTimer = null;
 let audioCtx = null;
 let lastBacksideSignature = '';
+let hasBacksideSignatureBaseline = false;
 let soundEnabled = false;
 let defaultGates = {};
 let tickerURLTemplate = '';
@@ -476,10 +477,19 @@ async function refresh() {
     }
     const data = await res.json();
     const nextBacksideSignature = (data.backside_candidates || []).map((c) => `${c.symbol}:${c.rank}`).join('|');
-    if (lastBacksideSignature && nextBacksideSignature !== lastBacksideSignature) {
-      playBacksideChangeAlert();
+    if (mode === 'live') {
+      const shouldPlayBacksideAlert = hasBacksideSignatureBaseline
+        && !!nextBacksideSignature
+        && nextBacksideSignature !== lastBacksideSignature;
+      if (shouldPlayBacksideAlert) {
+        playBacksideChangeAlert();
+      }
+      lastBacksideSignature = nextBacksideSignature;
+      hasBacksideSignatureBaseline = true;
+    } else {
+      lastBacksideSignature = '';
+      hasBacksideSignatureBaseline = false;
     }
-    lastBacksideSignature = nextBacksideSignature;
     lastSnapshot = data;
     try {
       await refreshBacksideHistory(mode);
@@ -508,6 +518,7 @@ async function refresh() {
     lastSnapshot = null;
     backsideHistory = [];
     lastBacksideSignature = '';
+    hasBacksideSignatureBaseline = false;
     updateTabLabels(null);
     qs('meta').textContent = `Error: ${err.message}`;
   } finally {

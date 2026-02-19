@@ -1157,39 +1157,34 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (fl
 
 	hhCount := 0
 	hlCount := 0
-	latestHHIdx := -1
-	latestHLIdx := -1
+	firstHHIdx := -1
+	firstHLAfterHHIdx := -1
 	for i := starterLowIdx + 1; i < len(bars); i++ {
 		if bars[i].HighPxN > bars[i-1].HighPxN {
 			hhCount++
-			latestHHIdx = i
+			if firstHHIdx < 0 {
+				firstHHIdx = i
+			}
 		}
 		if bars[i].LowPxN > bars[i-1].LowPxN {
 			hlCount++
-			latestHLIdx = i
+			if firstHHIdx >= 0 && i > firstHHIdx && firstHLAfterHHIdx < 0 {
+				firstHLAfterHHIdx = i
+			}
 		}
 	}
 	if hhCount < 1 || hlCount < 1 {
 		return 0, false
 	}
 
-	if latestHHIdx < 0 || latestHLIdx < 0 {
-		return 0, false
-	}
-
-	earlyIdx := latestHHIdx
-	lateIdx := latestHLIdx
-	if earlyIdx > lateIdx {
-		earlyIdx, lateIdx = lateIdx, earlyIdx
-	}
-	if earlyIdx <= starterLowIdx || lateIdx <= starterLowIdx {
+	if firstHHIdx <= starterLowIdx || firstHLAfterHHIdx <= firstHHIdx {
 		return 0, false
 	}
 	// Require one bar after HH/HL has formed.
-	if lateIdx+1 >= len(bars) {
+	if firstHLAfterHHIdx+1 >= len(bars) {
 		return 0, false
 	}
-	postIdx := lateIdx + 1
+	postIdx := firstHLAfterHHIdx + 1
 	if postIdx <= starterLowIdx {
 		return 0, false
 	}

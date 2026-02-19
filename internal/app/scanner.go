@@ -27,6 +27,7 @@ const (
 	rsWindow15m       = 15 * time.Minute
 	rsWindow30m       = 30 * time.Minute
 	vwapSlopeLookback = 1 * time.Minute
+	rvolTopK          = 30
 )
 
 // SymbolState holds rolling intraday state derived from MBP-1 records.
@@ -118,6 +119,7 @@ type TopSnapshot struct {
 	CountWeakest   int       `json:"count_weakest"`
 	CountHardPass  int       `json:"count_hard_pass"`
 	CountBackside  int       `json:"count_backside"`
+	CountRVOL      int       `json:"count_rvol"`
 	Message        string    `json:"message,omitempty"`
 	GateDebug      GateDebug `json:"gate_debug"`
 	// Keep Candidates for backward compatibility with older clients; this mirrors StrongestCandidates.
@@ -126,6 +128,7 @@ type TopSnapshot struct {
 	WeakestCandidates   []Candidate `json:"weakest_candidates"`
 	HardPassCandidates  []Candidate `json:"hard_pass_candidates"`
 	BacksideCandidates  []Candidate `json:"backside_candidates"`
+	RVOLCandidates      []Candidate `json:"rvol_candidates"`
 }
 
 type GateDebug struct {
@@ -183,6 +186,9 @@ type Scanner struct {
 	historyMu sync.RWMutex
 	history   []TopSnapshot
 
+	liveRVOLMinute     string
+	liveRVOLCandidates []Candidate
+
 	// per-run telemetry (useful for replay sanity checks)
 	runMbp1Messages uint64
 	runTradeEvents  uint64
@@ -220,6 +226,7 @@ func NewScanner(log *slog.Logger, cfg Config, watchlist map[string]struct{}, bas
 		WeakestCandidates:   []Candidate{},
 		HardPassCandidates:  []Candidate{},
 		BacksideCandidates:  []Candidate{},
+		RVOLCandidates:      []Candidate{},
 	}
 	s.snap.Store(empty)
 	return s
@@ -403,6 +410,7 @@ func (s *Scanner) runStream(ctx context.Context, start time.Time, historical boo
 	visitor := &dbVisitor{s: s, historical: historical}
 	lastRank := time.Now()
 	lastProgressLog := time.Now()
+	lastMinutePublish := time.Time{}
 	stopReason := "stream_end"
 	nextHistoryMinute := start.In(s.loc).Truncate(time.Minute)
 
@@ -444,8 +452,16 @@ func (s *Scanner) runStream(ctx context.Context, start time.Time, historical boo
 			continue
 		}
 
+		nowNY := time.Now().In(s.loc)
+		currentMinute := nowNY.Truncate(time.Minute)
+		if lastMinutePublish.IsZero() || currentMinute.After(lastMinutePublish) {
+			s.publish(s.computeSnapshotAt(nowNY, "live"), true)
+			lastMinutePublish = currentMinute
+			lastRank = time.Now()
+			continue
+		}
+
 		if time.Since(lastRank) >= s.cfg.Scan.RankInterval.Duration {
-			nowNY := time.Now().In(s.loc)
 			s.publish(s.computeSnapshotAt(nowNY, "live"), true)
 			lastRank = time.Now()
 		}
@@ -511,6 +527,20 @@ func (s *Scanner) runStream(ctx context.Context, start time.Time, historical boo
 }
 
 func (s *Scanner) publish(snap TopSnapshot, keepHistory bool) {
+	if snap.Mode == "live" {
+		minuteKey := snap.GeneratedAt.In(s.loc).Format("2006-01-02 15:04")
+		if minuteKey != s.liveRVOLMinute {
+			s.liveRVOLMinute = minuteKey
+			s.liveRVOLCandidates = cloneCandidates(snap.RVOLCandidates)
+		} else {
+			snap.RVOLCandidates = cloneCandidates(s.liveRVOLCandidates)
+		}
+		snap.CountRVOL = len(snap.RVOLCandidates)
+	} else {
+		s.liveRVOLMinute = ""
+		s.liveRVOLCandidates = nil
+	}
+
 	s.snap.Store(snap)
 	if !keepHistory {
 		return
@@ -1615,6 +1645,7 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	for i := range hardPassOut {
 		hardPassOut[i].Rank = i + 1
 	}
+	rvolOut := topRVOLCandidates(hardPassOut, rvolTopK)
 
 	message := ""
 	if len(rows) == 0 {
@@ -1634,6 +1665,7 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 		CountWeakest:        weakestRanked,
 		CountHardPass:       hardPassRanked,
 		CountBackside:       backsideRanked,
+		CountRVOL:           len(rvolOut),
 		Message:             message,
 		GateDebug:           debug,
 		Candidates:          strongestOut,
@@ -1641,6 +1673,7 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 		WeakestCandidates:   weakestOut,
 		HardPassCandidates:  hardPassOut,
 		BacksideCandidates:  backsideOut,
+		RVOLCandidates:      rvolOut,
 	}
 }
 
@@ -1705,6 +1738,38 @@ func (h *candHeap) Pop() interface{} {
 	x := old[n-1]
 	*h = old[:n-1]
 	return x
+}
+
+func cloneCandidates(in []Candidate) []Candidate {
+	if len(in) == 0 {
+		return []Candidate{}
+	}
+	out := make([]Candidate, len(in))
+	copy(out, in)
+	return out
+}
+
+func topRVOLCandidates(in []Candidate, k int) []Candidate {
+	if len(in) == 0 || k <= 0 {
+		return []Candidate{}
+	}
+	out := cloneCandidates(in)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].RVOL == out[j].RVOL {
+			if out[i].DollarVolPerMin == out[j].DollarVolPerMin {
+				return out[i].Symbol < out[j].Symbol
+			}
+			return out[i].DollarVolPerMin > out[j].DollarVolPerMin
+		}
+		return out[i].RVOL > out[j].RVOL
+	})
+	if len(out) > k {
+		out = out[:k]
+	}
+	for i := range out {
+		out[i].Rank = i + 1
+	}
+	return out
 }
 
 func pushTopK(h *candHeap, c Candidate, k int) {

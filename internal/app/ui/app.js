@@ -243,6 +243,9 @@ function listForTab(data) {
   if (activeTab === 'backside') {
     return data.backside_candidates || [];
   }
+  if (activeTab === 'rvol') {
+    return data.rvol_candidates || [];
+  }
   if (activeTab === 'hp') {
     return data.hard_pass_candidates || [];
   }
@@ -356,11 +359,12 @@ function syncModeDependentTabs() {
 function setTab(tab) {
   const mode = qs('mode')?.value || 'live';
   const isLive = mode === 'live';
-  activeTab = tab === 'weakest' || tab === 'hp' || tab === 'backside' || (isLive && tab === 'backside-history')
+  activeTab = tab === 'weakest' || tab === 'rvol' || tab === 'hp' || tab === 'backside' || (isLive && tab === 'backside-history')
     ? tab
     : 'strongest';
   qs('tab-strongest')?.classList.toggle('active', activeTab === 'strongest');
   qs('tab-weakest')?.classList.toggle('active', activeTab === 'weakest');
+  qs('tab-rvol')?.classList.toggle('active', activeTab === 'rvol');
   qs('tab-hp')?.classList.toggle('active', activeTab === 'hp');
   qs('tab-backside')?.classList.toggle('active', activeTab === 'backside');
   qs('tab-backside-history')?.classList.toggle('active', activeTab === 'backside-history');
@@ -371,11 +375,13 @@ function setTab(tab) {
 function updateTabLabels(data) {
   const strongestCount = (data?.strongest_candidates || data?.candidates || []).length;
   const weakestCount = (data?.weakest_candidates || []).length;
+  const rvolCount = (data?.rvol_candidates || []).length;
   const hpCount = (data?.hard_pass_candidates || []).length;
   const backsideCount = (data?.backside_candidates || []).length;
   const backsideHistoryCount = (backsideHistory || []).length;
   if (qs('tab-strongest')) qs('tab-strongest').textContent = `Strongest (${strongestCount})`;
   if (qs('tab-weakest')) qs('tab-weakest').textContent = `Weakest (${weakestCount})`;
+  if (qs('tab-rvol')) qs('tab-rvol').textContent = `RVOL (${rvolCount})`;
   if (qs('tab-hp')) qs('tab-hp').textContent = `HP (${hpCount})`;
   if (qs('tab-backside')) qs('tab-backside').textContent = `Backside (${backsideCount})`;
   if (qs('tab-backside-history')) qs('tab-backside-history').textContent = `Backside Historical (${backsideHistoryCount})`;
@@ -569,6 +575,7 @@ function wire() {
   });
   qs('tab-strongest')?.addEventListener('click', () => setTab('strongest'));
   qs('tab-weakest')?.addEventListener('click', () => setTab('weakest'));
+  qs('tab-rvol')?.addEventListener('click', () => setTab('rvol'));
   qs('tab-hp')?.addEventListener('click', () => setTab('hp'));
   qs('tab-backside')?.addEventListener('click', () => setTab('backside'));
   qs('tab-backside-history')?.addEventListener('click', () => setTab('backside-history'));

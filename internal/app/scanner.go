@@ -1158,6 +1158,7 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (fl
 	hhCount := 0
 	hlCount := 0
 	firstHHIdx := -1
+	firstHLIdx := -1
 	firstHLAfterHHIdx := -1
 	for i := starterLowIdx + 1; i < len(bars); i++ {
 		if bars[i].HighPxN > bars[i-1].HighPxN {
@@ -1168,6 +1169,9 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (fl
 		}
 		if bars[i].LowPxN > bars[i-1].LowPxN {
 			hlCount++
+			if firstHLIdx < 0 {
+				firstHLIdx = i
+			}
 			if firstHHIdx >= 0 && i > firstHHIdx && firstHLAfterHHIdx < 0 {
 				firstHLAfterHHIdx = i
 			}
@@ -1194,13 +1198,20 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (fl
 		return 0, false
 	}
 	aboveEMA := 0
-	for i := max(0, len(bars)-3); i < len(bars); i++ {
+	if firstHLIdx < 0 || firstHLIdx >= len(bars) {
+		return 0, false
+	}
+	for i := firstHLIdx; i < len(bars); i++ {
 		closePx := float64(bars[i].ClosePxN) / pxScale
 		if closePx >= ema9 {
 			aboveEMA++
 		}
 	}
-	if aboveEMA < 2 {
+	totalSinceClosestHL := len(bars) - firstHLIdx
+	if totalSinceClosestHL <= 0 {
+		return 0, false
+	}
+	if aboveEMA*2 < totalSinceClosestHL {
 		return 0, false
 	}
 
@@ -1209,7 +1220,7 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (fl
 		return 0, false
 	}
 	consistency := clamp01(0.5*(float64(hhCount)/steps) + 0.5*(float64(hlCount)/steps))
-	emaSupport := clamp01(float64(aboveEMA) / 3.0)
+	emaSupport := clamp01(float64(aboveEMA) / float64(totalSinceClosestHL))
 	score := clamp01(0.70*consistency + 0.30*emaSupport)
 	return score, true
 }

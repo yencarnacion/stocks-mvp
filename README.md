@@ -62,3 +62,17 @@ go run ./cmd/report -date 20260218 -output output.md
 - Optional flags: `-config`, `-watchlist`, `-baselines`, `-dotenv`, `-timeout`.
 
 The report includes clickable ticker links that call `/api/open-chart` with `ticker`, `date`, `time`, and tab-aligned `signal` (`buy`/`sell`).
+
+## Tests
+
+Run the full test suite:
+
+```bash
+go test ./...
+```
+
+Run only app package tests:
+
+```bash
+go test ./internal/app
+```

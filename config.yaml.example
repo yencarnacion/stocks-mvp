@@ -32,6 +32,7 @@ scan:
   rank_interval: "15s"
   max_staleness: "60s"
   historical_timeout: "90s"
+  backside_min_hh_rally_pct: 0.0005
 
   min_price: 5
   max_price: 300

@@ -1174,7 +1174,79 @@ func emaLastClose(bars []intradayBar, period int) (float64, bool) {
 	return ema, true
 }
 
-func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (float64, bool) {
+func isPivotHighAt(bars []intradayBar, idx int) bool {
+	if idx <= 0 || idx >= len(bars)-1 {
+		return false
+	}
+	high := bars[idx].HighPxN
+	if high <= 0 {
+		return false
+	}
+	return high >= bars[idx-1].HighPxN && high > bars[idx+1].HighPxN
+}
+
+func isPivotLowAt(bars []intradayBar, idx int) bool {
+	if idx <= 0 || idx >= len(bars)-1 {
+		return false
+	}
+	low := bars[idx].LowPxN
+	if low <= 0 {
+		return false
+	}
+	return low <= bars[idx-1].LowPxN && low < bars[idx+1].LowPxN
+}
+
+func findBacksideHHIdx(bars []intradayBar, starterLowIdx int, minRallyPct float64) int {
+	if starterLowIdx < 0 || starterLowIdx >= len(bars)-1 {
+		return -1
+	}
+	starterLowPxN := bars[starterLowIdx].LowPxN
+	if starterLowPxN <= 0 {
+		return -1
+	}
+
+	maxIdx := -1
+	maxHigh := int64(0)
+	for i := starterLowIdx + 1; i < len(bars); i++ {
+		high := bars[i].HighPxN
+		if high <= 0 {
+			continue
+		}
+		if high > maxHigh {
+			maxHigh = high
+			maxIdx = i
+		}
+		if !isPivotHighAt(bars, i) {
+			continue
+		}
+		rallyPct := float64(high-starterLowPxN) / float64(starterLowPxN)
+		if rallyPct >= minRallyPct {
+			return i
+		}
+	}
+	if maxIdx <= starterLowIdx || maxHigh <= 0 {
+		return -1
+	}
+	rallyPct := float64(maxHigh-starterLowPxN) / float64(starterLowPxN)
+	if rallyPct < minRallyPct {
+		return -1
+	}
+	return maxIdx
+}
+
+func findBacksideHLAfterHHIdx(bars []intradayBar, hhIdx int) int {
+	if hhIdx < 0 || hhIdx >= len(bars)-1 {
+		return -1
+	}
+	for i := hhIdx + 1; i < len(bars)-1; i++ {
+		if isPivotLowAt(bars, i) {
+			return i
+		}
+	}
+	return -1
+}
+
+func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64, minHHRallyPct float64) (float64, bool) {
 	if st == nil || st.LowPxN <= 0 || price <= 0 || sessionVWAP <= 0 {
 		return 0, false
 	}
@@ -1213,35 +1285,15 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (fl
 		return 0, false
 	}
 
-	hhCount := 0
-	hlCount := 0
-	firstHHIdx := -1
-	firstHLIdx := -1
-	firstHLAfterHHIdx := -1
-	for i := starterLowIdx + 1; i < len(bars); i++ {
-		if bars[i].HighPxN > bars[i-1].HighPxN {
-			hhCount++
-			if firstHHIdx < 0 {
-				firstHHIdx = i
-			}
-		}
-		if bars[i].LowPxN > bars[i-1].LowPxN {
-			hlCount++
-			if firstHLIdx < 0 {
-				firstHLIdx = i
-			}
-			if firstHHIdx >= 0 && i > firstHHIdx && firstHLAfterHHIdx < 0 {
-				firstHLAfterHHIdx = i
-			}
-		}
-	}
-	if hhCount < 1 || hlCount < 1 {
+	firstHHIdx := findBacksideHHIdx(bars, starterLowIdx, minHHRallyPct)
+	if firstHHIdx <= starterLowIdx {
 		return 0, false
 	}
-
-	if firstHHIdx <= starterLowIdx || firstHLAfterHHIdx <= firstHHIdx {
+	firstHLAfterHHIdx := findBacksideHLAfterHHIdx(bars, firstHHIdx)
+	if firstHLAfterHHIdx <= firstHHIdx {
 		return 0, false
 	}
+	firstHLIdx := firstHLAfterHHIdx
 	// Require one bar after HH/HL has formed.
 	if firstHLAfterHHIdx+1 >= len(bars) {
 		return 0, false
@@ -1273,7 +1325,17 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64) (fl
 		return 0, false
 	}
 
-	steps := float64(len(bars) - (starterLowIdx + 1))
+	hhCount := 0
+	hlCount := 0
+	for i := starterLowIdx + 1; i <= firstHLAfterHHIdx; i++ {
+		if bars[i].HighPxN > bars[i-1].HighPxN {
+			hhCount++
+		}
+		if bars[i].LowPxN > bars[i-1].LowPxN {
+			hlCount++
+		}
+	}
+	steps := float64(firstHLAfterHHIdx - starterLowIdx)
 	if steps <= 0 {
 		return 0, false
 	}
@@ -1605,7 +1667,7 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 		hardPassRanked++
 
 		st := s.statesBySymbol[row.symbol]
-		if backsideScore, ok := backsideSetupScore(st, row.price, row.sessionVWAP); ok {
+		if backsideScore, ok := backsideSetupScore(st, row.price, row.sessionVWAP, scan.BacksideMinHHRallyPct); ok {
 			c := cand
 			c.Score = backsideScore
 			pushTopK(backside, c, scan.TopK)

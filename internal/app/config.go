@@ -89,16 +89,17 @@ type ScoringConfig struct {
 }
 
 type ScanConfig struct {
-	TopK               int      `yaml:"top_k"`
-	RankInterval       Duration `yaml:"rank_interval"`
-	MaxStaleness       Duration `yaml:"max_staleness"`
-	HistoricalTimeout  Duration `yaml:"historical_timeout"`
-	MinPrice           float64  `yaml:"min_price"`
-	MaxPrice           float64  `yaml:"max_price"`
-	MinRVOL            float64  `yaml:"min_rvol"`
-	MinDollarVolPerM   float64  `yaml:"min_dollar_vol_per_min"`
-	MinAdrExpansion    float64  `yaml:"min_adr_expansion"`
-	MinAvgDollarVol10d float64  `yaml:"min_avg_dollar_vol_10d"`
+	TopK                  int      `yaml:"top_k"`
+	RankInterval          Duration `yaml:"rank_interval"`
+	MaxStaleness          Duration `yaml:"max_staleness"`
+	HistoricalTimeout     Duration `yaml:"historical_timeout"`
+	BacksideMinHHRallyPct float64  `yaml:"backside_min_hh_rally_pct"`
+	MinPrice              float64  `yaml:"min_price"`
+	MaxPrice              float64  `yaml:"max_price"`
+	MinRVOL               float64  `yaml:"min_rvol"`
+	MinDollarVolPerM      float64  `yaml:"min_dollar_vol_per_min"`
+	MinAdrExpansion       float64  `yaml:"min_adr_expansion"`
+	MinAvgDollarVol10d    float64  `yaml:"min_avg_dollar_vol_10d"`
 	// Backward-compat alias.
 	MinAvgDollarVol20d float64       `yaml:"min_avg_dollar_vol_20d"`
 	SpreadCaps         []SpreadCap   `yaml:"spread_caps"`
@@ -137,16 +138,17 @@ func defaultConfig() Config {
 			FallbackAvgDollarVol10d: 20_000_000,
 		},
 		Scan: ScanConfig{
-			TopK:               30,
-			RankInterval:       Duration{15 * time.Second},
-			MaxStaleness:       Duration{60 * time.Second},
-			HistoricalTimeout:  Duration{90 * time.Second},
-			MinPrice:           5,
-			MaxPrice:           300,
-			MinRVOL:            2.0,
-			MinDollarVolPerM:   150_000,
-			MinAdrExpansion:    1.2,
-			MinAvgDollarVol10d: 20_000_000,
+			TopK:                  30,
+			RankInterval:          Duration{15 * time.Second},
+			MaxStaleness:          Duration{60 * time.Second},
+			HistoricalTimeout:     Duration{90 * time.Second},
+			BacksideMinHHRallyPct: 0.0005,
+			MinPrice:              5,
+			MaxPrice:              300,
+			MinRVOL:               2.0,
+			MinDollarVolPerM:      150_000,
+			MinAdrExpansion:       1.2,
+			MinAvgDollarVol10d:    20_000_000,
 			SpreadCaps: []SpreadCap{
 				{MinPrice: 50, MaxSpreadPct: 0.0005},
 				{MinPrice: 10, MaxSpreadPct: 0.0010},
@@ -199,6 +201,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if cfg.Scan.HistoricalTimeout.Duration <= 0 {
 		cfg.Scan.HistoricalTimeout = Duration{90 * time.Second}
+	}
+	if cfg.Scan.BacksideMinHHRallyPct < 0 {
+		cfg.Scan.BacksideMinHHRallyPct = 0.0005
 	}
 	if cfg.Market.Timezone == "" {
 		cfg.Market.Timezone = "America/New_York"

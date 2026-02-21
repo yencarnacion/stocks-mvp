@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"testing"
 	"time"
 )
@@ -171,5 +172,68 @@ func TestPassesRVOLTabGates(t *testing.T) {
 		avgDollarVol10d: 9_000_000,
 	}, scan) {
 		t.Fatalf("expected row with low 10d $vol to fail RVOL tab gates")
+	}
+}
+
+func testIntradayBar(high, low, close float64) intradayBar {
+	return intradayBar{
+		HighPxN:  int64(math.Round(high * pxScale)),
+		LowPxN:   int64(math.Round(low * pxScale)),
+		ClosePxN: int64(math.Round(close * pxScale)),
+	}
+}
+
+func TestFindBacksideHHIdxRequiresMinRally(t *testing.T) {
+	bars := []intradayBar{
+		testIntradayBar(9.95, 9.90, 9.92),
+		testIntradayBar(9.98, 9.93, 9.95),
+		testIntradayBar(9.97, 9.94, 9.96),
+		testIntradayBar(9.99, 9.95, 9.98),
+	}
+
+	if got := findBacksideHHIdx(bars, 0, 0.01); got != -1 {
+		t.Fatalf("expected no HH when rally is below threshold, got idx=%d", got)
+	}
+}
+
+func TestFindBacksideHHIdxUsesFirstQualifiedPivot(t *testing.T) {
+	bars := []intradayBar{
+		testIntradayBar(10.00, 9.90, 9.95),
+		testIntradayBar(10.05, 9.95, 10.00),
+		testIntradayBar(10.02, 9.97, 9.99),
+		testIntradayBar(10.20, 10.10, 10.15),
+		testIntradayBar(10.15, 10.05, 10.08),
+	}
+
+	if got := findBacksideHHIdx(bars, 0, 0.01); got != 1 {
+		t.Fatalf("expected first qualified pivot HH at idx=1, got idx=%d", got)
+	}
+}
+
+func TestFindBacksideHHIdxFallsBackToMaxHighAfterStarterLow(t *testing.T) {
+	bars := []intradayBar{
+		testIntradayBar(9.95, 9.90, 9.92),
+		testIntradayBar(10.00, 9.95, 9.98),
+		testIntradayBar(10.10, 10.00, 10.05),
+		testIntradayBar(10.20, 10.10, 10.15),
+	}
+
+	if got := findBacksideHHIdx(bars, 0, 0.01); got != 3 {
+		t.Fatalf("expected fallback max high HH at idx=3, got idx=%d", got)
+	}
+}
+
+func TestFindBacksideHLAfterHHIdxFindsPivotLow(t *testing.T) {
+	bars := []intradayBar{
+		testIntradayBar(10.00, 9.90, 9.95),
+		testIntradayBar(10.20, 10.00, 10.10),
+		testIntradayBar(10.50, 10.20, 10.45),
+		testIntradayBar(10.40, 10.15, 10.20),
+		testIntradayBar(10.45, 10.05, 10.30),
+		testIntradayBar(10.60, 10.10, 10.55),
+	}
+
+	if got := findBacksideHLAfterHHIdx(bars, 2); got != 4 {
+		t.Fatalf("expected pivot HL at idx=4 after HH idx=2, got idx=%d", got)
 	}
 }

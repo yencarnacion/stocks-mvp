@@ -25,6 +25,9 @@ func TestLoadConfigMissingFileReturnsDefaults(t *testing.T) {
 	if cfg.Scan.TopK != def.Scan.TopK {
 		t.Fatalf("expected default top_k %d, got %d", def.Scan.TopK, cfg.Scan.TopK)
 	}
+	if cfg.Scan.BacksideMinHHRallyPct != def.Scan.BacksideMinHHRallyPct {
+		t.Fatalf("expected default backside_min_hh_rally_pct %v, got %v", def.Scan.BacksideMinHHRallyPct, cfg.Scan.BacksideMinHHRallyPct)
+	}
 }
 
 func TestLoadConfigAppliesFallbackAliasesAndSortsSpreadCaps(t *testing.T) {
@@ -48,6 +51,7 @@ scan:
   rank_interval: 0s
   max_staleness: 0s
   historical_timeout: 0s
+  backside_min_hh_rally_pct: 0.002
   min_avg_dollar_vol_10d: 0
   min_avg_dollar_vol_20d: 98765
   spread_caps:
@@ -88,6 +92,9 @@ scan:
 	if cfg.Scan.HistoricalTimeout.Duration != 90*time.Second {
 		t.Fatalf("expected historical timeout fallback 90s, got %v", cfg.Scan.HistoricalTimeout.Duration)
 	}
+	if cfg.Scan.BacksideMinHHRallyPct != 0.002 {
+		t.Fatalf("expected backside_min_hh_rally_pct override 0.002, got %v", cfg.Scan.BacksideMinHHRallyPct)
+	}
 	if cfg.Market.Timezone != "America/New_York" {
 		t.Fatalf("expected timezone fallback, got %q", cfg.Market.Timezone)
 	}
@@ -120,5 +127,23 @@ func TestLoadConfigInvalidYAMLReturnsError(t *testing.T) {
 
 	if _, err := LoadConfig(path); err == nil {
 		t.Fatalf("expected error for invalid YAML")
+	}
+}
+
+func TestLoadConfigNegativeBacksideMinHHRallyPctFallsBackToDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yml := `scan:
+  backside_min_hh_rally_pct: -0.5
+`
+	if err := os.WriteFile(path, []byte(yml), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Scan.BacksideMinHHRallyPct != 0.0005 {
+		t.Fatalf("expected negative backside_min_hh_rally_pct to fallback to 0.0005, got %v", cfg.Scan.BacksideMinHHRallyPct)
 	}
 }

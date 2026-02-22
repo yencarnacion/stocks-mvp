@@ -109,30 +109,34 @@ type Candidate struct {
 }
 
 type TopSnapshot struct {
-	Mode            string    `json:"mode"`
-	Timezone        string    `json:"timezone"`
-	GeneratedAt     time.Time `json:"generated_at"`
-	GeneratedAtNY   string    `json:"generated_at_ny"`
-	AsOfNY          string    `json:"as_of_ny"`
-	Benchmark       string    `json:"benchmark"`
-	CountSeen       int       `json:"count_seen"`
-	CountRanked     int       `json:"count_ranked"`
-	CountStrongest  int       `json:"count_strongest"`
-	CountWeakest    int       `json:"count_weakest"`
-	CountHardPass   int       `json:"count_hard_pass"`
-	CountBackside   int       `json:"count_backside"`
-	CountRubberBand int       `json:"count_rubber_band"`
-	CountRVOL       int       `json:"count_rvol"`
-	Message         string    `json:"message,omitempty"`
-	GateDebug       GateDebug `json:"gate_debug"`
+	Mode                   string    `json:"mode"`
+	Timezone               string    `json:"timezone"`
+	GeneratedAt            time.Time `json:"generated_at"`
+	GeneratedAtNY          string    `json:"generated_at_ny"`
+	AsOfNY                 string    `json:"as_of_ny"`
+	Benchmark              string    `json:"benchmark"`
+	CountSeen              int       `json:"count_seen"`
+	CountRanked            int       `json:"count_ranked"`
+	CountStrongest         int       `json:"count_strongest"`
+	CountWeakest           int       `json:"count_weakest"`
+	CountHardPass          int       `json:"count_hard_pass"`
+	CountBackside          int       `json:"count_backside"`
+	CountRubberBandBullish int       `json:"count_rubber_band_bullish"`
+	CountRubberBandBearish int       `json:"count_rubber_band_bearish"`
+	CountRubberBand        int       `json:"count_rubber_band"`
+	CountRVOL              int       `json:"count_rvol"`
+	Message                string    `json:"message,omitempty"`
+	GateDebug              GateDebug `json:"gate_debug"`
 	// Keep Candidates for backward compatibility with older clients; this mirrors StrongestCandidates.
-	Candidates           []Candidate `json:"candidates"`
-	StrongestCandidates  []Candidate `json:"strongest_candidates"`
-	WeakestCandidates    []Candidate `json:"weakest_candidates"`
-	HardPassCandidates   []Candidate `json:"hard_pass_candidates"`
-	BacksideCandidates   []Candidate `json:"backside_candidates"`
-	RubberBandCandidates []Candidate `json:"rubber_band_candidates"`
-	RVOLCandidates       []Candidate `json:"rvol_candidates"`
+	Candidates                  []Candidate `json:"candidates"`
+	StrongestCandidates         []Candidate `json:"strongest_candidates"`
+	WeakestCandidates           []Candidate `json:"weakest_candidates"`
+	HardPassCandidates          []Candidate `json:"hard_pass_candidates"`
+	BacksideCandidates          []Candidate `json:"backside_candidates"`
+	RubberBandCandidates        []Candidate `json:"rubber_band_candidates"` // Legacy alias for bullish rubber-band candidates.
+	RubberBandBullishCandidates []Candidate `json:"rubber_band_bullish_candidates"`
+	RubberBandBearishCandidates []Candidate `json:"rubber_band_bearish_candidates"`
+	RVOLCandidates              []Candidate `json:"rvol_candidates"`
 }
 
 type GateDebug struct {
@@ -219,19 +223,21 @@ func NewScanner(log *slog.Logger, cfg Config, watchlist map[string]struct{}, bas
 
 	nowNY := time.Now().In(loc)
 	empty := TopSnapshot{
-		Mode:                 "live",
-		Timezone:             cfg.Market.Timezone,
-		GeneratedAt:          nowNY,
-		GeneratedAtNY:        nowNY.Format("2006-01-02 15:04:05 MST"),
-		AsOfNY:               nowNY.Format("2006-01-02 15:04:05 MST"),
-		Benchmark:            strings.ToUpper(cfg.Databento.BenchmarkSymbol),
-		Candidates:           []Candidate{},
-		StrongestCandidates:  []Candidate{},
-		WeakestCandidates:    []Candidate{},
-		HardPassCandidates:   []Candidate{},
-		BacksideCandidates:   []Candidate{},
-		RubberBandCandidates: []Candidate{},
-		RVOLCandidates:       []Candidate{},
+		Mode:                        "live",
+		Timezone:                    cfg.Market.Timezone,
+		GeneratedAt:                 nowNY,
+		GeneratedAtNY:               nowNY.Format("2006-01-02 15:04:05 MST"),
+		AsOfNY:                      nowNY.Format("2006-01-02 15:04:05 MST"),
+		Benchmark:                   strings.ToUpper(cfg.Databento.BenchmarkSymbol),
+		Candidates:                  []Candidate{},
+		StrongestCandidates:         []Candidate{},
+		WeakestCandidates:           []Candidate{},
+		HardPassCandidates:          []Candidate{},
+		BacksideCandidates:          []Candidate{},
+		RubberBandCandidates:        []Candidate{},
+		RubberBandBullishCandidates: []Candidate{},
+		RubberBandBearishCandidates: []Candidate{},
+		RVOLCandidates:              []Candidate{},
 	}
 	s.snap.Store(empty)
 	return s
@@ -1356,6 +1362,14 @@ func backsideSetupScore(st *SymbolState, price float64, sessionVWAP float64, min
 }
 
 func rubberBandSetupScore(st *SymbolState) (float64, bool) {
+	return rubberBandDirectionalSetupScore(st, true)
+}
+
+func rubberBandBearishSetupScore(st *SymbolState) (float64, bool) {
+	return rubberBandDirectionalSetupScore(st, false)
+}
+
+func rubberBandDirectionalSetupScore(st *SymbolState, bullish bool) (float64, bool) {
 	if st == nil {
 		return 0, false
 	}
@@ -1365,36 +1379,66 @@ func rubberBandSetupScore(st *SymbolState) (float64, bool) {
 	}
 
 	signal := bars[len(bars)-1]
-	if signal.OpenPxN <= 0 || signal.ClosePxN <= 0 || signal.HighPxN <= 0 {
-		return 0, false
-	}
-	// Require a green 1-minute bar that actually closes above its open.
-	if signal.ClosePxN <= signal.OpenPxN {
+	if signal.OpenPxN <= 0 || signal.ClosePxN <= 0 || signal.HighPxN <= 0 || signal.LowPxN <= 0 {
 		return 0, false
 	}
 
-	// "Double bar break" and beyond: signal wick (high) clears highs of 2+ immediately preceding bars.
+	// Require directional 1-minute signal candle.
+	if bullish {
+		if signal.ClosePxN <= signal.OpenPxN {
+			return 0, false
+		}
+	} else {
+		if signal.ClosePxN >= signal.OpenPxN {
+			return 0, false
+		}
+	}
+
+	// "Double bar break" and beyond:
+	// bullish -> signal high clears highs of 2+ immediately preceding bars.
+	// bearish -> signal low clears lows of 2+ immediately preceding bars.
 	broken := 0
-	refHigh := int64(0)
+	refPx := int64(0)
 	for i := len(bars) - 2; i >= 0; i-- {
-		prevHigh := bars[i].HighPxN
-		if prevHigh <= 0 {
+		prev := bars[i]
+		if bullish {
+			if prev.HighPxN <= 0 {
+				break
+			}
+			if signal.HighPxN <= prev.HighPxN {
+				break
+			}
+			broken++
+			if refPx == 0 || prev.HighPxN > refPx {
+				refPx = prev.HighPxN
+			}
+			continue
+		}
+
+		if prev.LowPxN <= 0 {
 			break
 		}
-		if signal.HighPxN <= prevHigh {
+		if signal.LowPxN >= prev.LowPxN {
 			break
 		}
 		broken++
-		if prevHigh > refHigh {
-			refHigh = prevHigh
+		if refPx == 0 || prev.LowPxN < refPx {
+			refPx = prev.LowPxN
 		}
 	}
-	if broken < 2 || refHigh <= 0 {
+	if broken < 2 || refPx <= 0 {
 		return 0, false
 	}
 
-	bodyPct := float64(signal.ClosePxN-signal.OpenPxN) / float64(signal.OpenPxN)
-	breakPct := float64(signal.HighPxN-refHigh) / float64(refHigh)
+	bodyPct := 0.0
+	breakPct := 0.0
+	if bullish {
+		bodyPct = float64(signal.ClosePxN-signal.OpenPxN) / float64(signal.OpenPxN)
+		breakPct = float64(signal.HighPxN-refPx) / float64(refPx)
+	} else {
+		bodyPct = float64(signal.OpenPxN-signal.ClosePxN) / float64(signal.OpenPxN)
+		breakPct = float64(refPx-signal.LowPxN) / float64(refPx)
+	}
 	countScore := clamp01(float64(broken) / 5.0)
 	bodyScore := clamp01(bodyPct / 0.01)
 	breakScore := clamp01(breakPct / 0.005)
@@ -1606,18 +1650,21 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	strongest := &candHeap{}
 	weakest := &candHeap{}
 	backside := &candHeap{}
-	rubberBand := &candHeap{}
+	rubberBandBullish := &candHeap{}
+	rubberBandBearish := &candHeap{}
 	heap.Init(strongest)
 	heap.Init(weakest)
 	heap.Init(backside)
-	heap.Init(rubberBand)
+	heap.Init(rubberBandBullish)
+	heap.Init(rubberBandBearish)
 
 	ranked := 0
 	strongestRanked := 0
 	weakestRanked := 0
 	hardPassRanked := 0
 	backsideRanked := 0
-	rubberBandRanked := 0
+	rubberBandBullishRanked := 0
+	rubberBandBearishRanked := 0
 	hardPassOut := make([]Candidate, 0, 256)
 	rvolPool := make([]Candidate, 0, 256)
 	for _, row := range rows {
@@ -1736,8 +1783,14 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 		if rubberBandScore, ok := rubberBandSetupScore(st); ok {
 			c := cand
 			c.Score = rubberBandScore
-			pushTopK(rubberBand, c, scan.TopK)
-			rubberBandRanked++
+			pushTopK(rubberBandBullish, c, scan.TopK)
+			rubberBandBullishRanked++
+		}
+		if rubberBandBearScore, ok := rubberBandBearishSetupScore(st); ok {
+			c := cand
+			c.Score = rubberBandBearScore
+			pushTopK(rubberBandBearish, c, scan.TopK)
+			rubberBandBearishRanked++
 		}
 
 		if relStrength > 0 {
@@ -1775,7 +1828,8 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	strongestOut := drainRanked(strongest)
 	weakestOut := drainRanked(weakest)
 	backsideOut := drainRanked(backside)
-	rubberBandOut := drainRanked(rubberBand)
+	rubberBandBullishOut := drainRanked(rubberBandBullish)
+	rubberBandBearishOut := drainRanked(rubberBandBearish)
 	for i := range strongestOut {
 		strongestOut[i].Rank = i + 1
 		if strongestOut[i].SpreadPct > s.maxSpreadPctForScan(strongestOut[i].Price, scan) {
@@ -1794,9 +1848,15 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 			debug.CandidateSpreadViolations++
 		}
 	}
-	for i := range rubberBandOut {
-		rubberBandOut[i].Rank = i + 1
-		if rubberBandOut[i].SpreadPct > s.maxSpreadPctForScan(rubberBandOut[i].Price, scan) {
+	for i := range rubberBandBullishOut {
+		rubberBandBullishOut[i].Rank = i + 1
+		if rubberBandBullishOut[i].SpreadPct > s.maxSpreadPctForScan(rubberBandBullishOut[i].Price, scan) {
+			debug.CandidateSpreadViolations++
+		}
+	}
+	for i := range rubberBandBearishOut {
+		rubberBandBearishOut[i].Rank = i + 1
+		if rubberBandBearishOut[i].SpreadPct > s.maxSpreadPctForScan(rubberBandBearishOut[i].Price, scan) {
 			debug.CandidateSpreadViolations++
 		}
 	}
@@ -1812,29 +1872,33 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	}
 
 	return TopSnapshot{
-		Mode:                 mode,
-		Timezone:             s.cfg.Market.Timezone,
-		GeneratedAt:          evalNY,
-		GeneratedAtNY:        evalNY.Format("2006-01-02 15:04:05 MST"),
-		AsOfNY:               evalNY.Format("2006-01-02 15:04:05 MST"),
-		Benchmark:            bench,
-		CountSeen:            len(rows),
-		CountRanked:          ranked,
-		CountStrongest:       strongestRanked,
-		CountWeakest:         weakestRanked,
-		CountHardPass:        hardPassRanked,
-		CountBackside:        backsideRanked,
-		CountRubberBand:      rubberBandRanked,
-		CountRVOL:            len(rvolOut),
-		Message:              message,
-		GateDebug:            debug,
-		Candidates:           strongestOut,
-		StrongestCandidates:  strongestOut,
-		WeakestCandidates:    weakestOut,
-		HardPassCandidates:   hardPassOut,
-		BacksideCandidates:   backsideOut,
-		RubberBandCandidates: rubberBandOut,
-		RVOLCandidates:       rvolOut,
+		Mode:                        mode,
+		Timezone:                    s.cfg.Market.Timezone,
+		GeneratedAt:                 evalNY,
+		GeneratedAtNY:               evalNY.Format("2006-01-02 15:04:05 MST"),
+		AsOfNY:                      evalNY.Format("2006-01-02 15:04:05 MST"),
+		Benchmark:                   bench,
+		CountSeen:                   len(rows),
+		CountRanked:                 ranked,
+		CountStrongest:              strongestRanked,
+		CountWeakest:                weakestRanked,
+		CountHardPass:               hardPassRanked,
+		CountBackside:               backsideRanked,
+		CountRubberBandBullish:      rubberBandBullishRanked,
+		CountRubberBandBearish:      rubberBandBearishRanked,
+		CountRubberBand:             rubberBandBullishRanked, // Legacy alias for bullish rubber-band count.
+		CountRVOL:                   len(rvolOut),
+		Message:                     message,
+		GateDebug:                   debug,
+		Candidates:                  strongestOut,
+		StrongestCandidates:         strongestOut,
+		WeakestCandidates:           weakestOut,
+		HardPassCandidates:          hardPassOut,
+		BacksideCandidates:          backsideOut,
+		RubberBandCandidates:        rubberBandBullishOut,
+		RubberBandBullishCandidates: rubberBandBullishOut,
+		RubberBandBearishCandidates: rubberBandBearishOut,
+		RVOLCandidates:              rvolOut,
 	}
 }
 

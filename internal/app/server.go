@@ -63,6 +63,8 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/api/time", s.handleTime)
 	mux.HandleFunc("/api/backside-history", s.handleBacksideHistory)
 	mux.HandleFunc("/api/rb-history", s.handleRBHistory)
+	mux.HandleFunc("/api/rb-bull-history", s.handleRBBullHistory)
+	mux.HandleFunc("/api/rb-bear-history", s.handleRBBearHistory)
 
 	sub, _ := fs.Sub(uiFS, "ui")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
@@ -217,8 +219,19 @@ func (s *Server) handleBacksideHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRBHistory(w http.ResponseWriter, r *http.Request) {
+	// Legacy endpoint kept for compatibility; serves bullish rubber-band history.
+	s.handleRBBullHistory(w, r)
+}
+
+func (s *Server) handleRBBullHistory(w http.ResponseWriter, r *http.Request) {
 	s.handleSignalHistory(w, r, func(snap TopSnapshot) []Candidate {
-		return snap.RubberBandCandidates
+		return rubberBandBullishRows(snap)
+	})
+}
+
+func (s *Server) handleRBBearHistory(w http.ResponseWriter, r *http.Request) {
+	s.handleSignalHistory(w, r, func(snap TopSnapshot) []Candidate {
+		return snap.RubberBandBearishCandidates
 	})
 }
 
@@ -274,7 +287,13 @@ func collectBacksideHistoryItems(history []TopSnapshot, targetDate string, loc *
 
 func collectRubberBandHistoryItems(history []TopSnapshot, targetDate string, loc *time.Location) []BacksideHistoryItem {
 	return collectSignalHistoryItems(history, targetDate, loc, func(snap TopSnapshot) []Candidate {
-		return snap.RubberBandCandidates
+		return rubberBandBullishRows(snap)
+	})
+}
+
+func collectRubberBandBearishHistoryItems(history []TopSnapshot, targetDate string, loc *time.Location) []BacksideHistoryItem {
+	return collectSignalHistoryItems(history, targetDate, loc, func(snap TopSnapshot) []Candidate {
+		return snap.RubberBandBearishCandidates
 	})
 }
 
@@ -302,6 +321,13 @@ func collectSignalHistoryItems(history []TopSnapshot, targetDate string, loc *ti
 		})
 	}
 	return out
+}
+
+func rubberBandBullishRows(snap TopSnapshot) []Candidate {
+	if len(snap.RubberBandBullishCandidates) > 0 {
+		return snap.RubberBandBullishCandidates
+	}
+	return snap.RubberBandCandidates
 }
 
 func (s *Server) historicalSnapshot(ctx context.Context, asOfNY time.Time, scan *ScanConfig) (TopSnapshot, error) {

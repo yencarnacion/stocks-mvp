@@ -5,8 +5,10 @@ let clockTimer = null;
 let audioCtx = null;
 let lastBacksideSignature = '';
 let hasBacksideSignatureBaseline = false;
-let lastRubberBandSignature = '';
-let hasRubberBandSignatureBaseline = false;
+let lastRBBullishSignature = '';
+let hasRBBullishSignatureBaseline = false;
+let lastRBBearishSignature = '';
+let hasRBBearishSignatureBaseline = false;
 let soundEnabled = false;
 let defaultGates = {};
 let tickerURLTemplate = '';
@@ -18,12 +20,18 @@ let backsideHistoryDateNY = '';
 let backsideHistoryKnownKeys = new Set();
 let backsideHistoryNewKeys = new Set();
 let hasBacksideHistoryBaseline = false;
-let rbHistory = [];
-let rbHistoryByAsOf = new Map();
-let rbHistoryDateNY = '';
-let rbHistoryKnownKeys = new Set();
-let rbHistoryNewKeys = new Set();
-let hasRBHistoryBaseline = false;
+let rbBullHistory = [];
+let rbBullHistoryByAsOf = new Map();
+let rbBullHistoryDateNY = '';
+let rbBullHistoryKnownKeys = new Set();
+let rbBullHistoryNewKeys = new Set();
+let hasRBBullHistoryBaseline = false;
+let rbBearHistory = [];
+let rbBearHistoryByAsOf = new Map();
+let rbBearHistoryDateNY = '';
+let rbBearHistoryKnownKeys = new Set();
+let rbBearHistoryNewKeys = new Set();
+let hasRBBearHistoryBaseline = false;
 const nyClockFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York',
   year: 'numeric',
@@ -276,13 +284,26 @@ function applyGateValues(values) {
   }
 }
 
+function rbBullishCandidates(data) {
+  if (!data) return [];
+  return data.rubber_band_bullish_candidates || data.rubber_band_candidates || [];
+}
+
+function rbBearishCandidates(data) {
+  if (!data) return [];
+  return data.rubber_band_bearish_candidates || [];
+}
+
 function listForTab(data) {
   if (!data) return [];
   if (activeTab === 'backside') {
     return data.backside_candidates || [];
   }
-  if (activeTab === 'rubber-band') {
-    return data.rubber_band_candidates || [];
+  if (activeTab === 'rb-bullish') {
+    return rbBullishCandidates(data);
+  }
+  if (activeTab === 'rb-bearish') {
+    return rbBearishCandidates(data);
   }
   if (activeTab === 'rvol') {
     return data.rvol_candidates || [];
@@ -315,7 +336,11 @@ function renderTableHeader() {
   const row = document.querySelector('#tbl thead tr');
   if (!row) return;
   row.innerHTML = '';
-  const headers = activeTab === 'backside-history' || activeTab === 'rb-history' ? HISTORY_TAB_HEADERS : MAIN_TABLE_HEADERS;
+  const headers = activeTab === 'backside-history'
+    || activeTab === 'rb-bull-history'
+    || activeTab === 'rb-bear-history'
+    ? HISTORY_TAB_HEADERS
+    : MAIN_TABLE_HEADERS;
   for (const h of headers) {
     const th = document.createElement('th');
     th.textContent = h;
@@ -328,6 +353,12 @@ function renderDefaultRows(data) {
   tbody.innerHTML = '';
   for (const c of listForTab(data)) {
     const tr = document.createElement('tr');
+    if (activeTab === 'rb-bullish') {
+      tr.classList.add('row-bullish-signal');
+    }
+    if (activeTab === 'rb-bearish') {
+      tr.classList.add('row-bearish-signal');
+    }
     const link = formatTickerURL(c.symbol, data);
     const cells = [
       c.rank,
@@ -359,6 +390,11 @@ function renderHistoryRows(items, newKeys, signal = 'buy') {
   for (const item of items) {
     for (const c of item.rows || []) {
       const tr = document.createElement('tr');
+      if (signal === 'buy') {
+        tr.classList.add('row-bullish-signal');
+      } else if (signal === 'sell') {
+        tr.classList.add('row-bearish-signal');
+      }
       const link = formatHistoryTickerURL(c.symbol, item.as_of_ny, signal);
       const key = `${item.as_of_ny || ''}|${c.symbol || ''}`;
       const isNew = newKeys.has(key);
@@ -391,8 +427,12 @@ function renderRows(data) {
     renderHistoryRows(backsideHistory, backsideHistoryNewKeys, 'buy');
     return;
   }
-  if (activeTab === 'rb-history') {
-    renderHistoryRows(rbHistory, rbHistoryNewKeys, 'buy');
+  if (activeTab === 'rb-bull-history') {
+    renderHistoryRows(rbBullHistory, rbBullHistoryNewKeys, 'buy');
+    return;
+  }
+  if (activeTab === 'rb-bear-history') {
+    renderHistoryRows(rbBearHistory, rbBearHistoryNewKeys, 'sell');
     return;
   }
   renderDefaultRows(data);
@@ -402,12 +442,13 @@ function syncModeDependentTabs() {
   const mode = qs('mode')?.value;
   const isLive = mode === 'live';
   qs('tab-backside-history')?.classList.toggle('hidden', !isLive);
-  qs('tab-rb-history')?.classList.toggle('hidden', !isLive);
+  qs('tab-rb-bull-history')?.classList.toggle('hidden', !isLive);
+  qs('tab-rb-bear-history')?.classList.toggle('hidden', !isLive);
   if (!isLive && activeTab === 'backside-history') {
     activeTab = 'backside';
   }
-  if (!isLive && activeTab === 'rb-history') {
-    activeTab = 'rubber-band';
+  if (!isLive && (activeTab === 'rb-bull-history' || activeTab === 'rb-bear-history')) {
+    activeTab = activeTab === 'rb-bear-history' ? 'rb-bearish' : 'rb-bullish';
   }
 }
 
@@ -418,8 +459,9 @@ function setTab(tab) {
       tab === 'rvol' ||
       tab === 'hp' ||
       tab === 'backside' ||
-      tab === 'rubber-band' ||
-      (isLive && (tab === 'backside-history' || tab === 'rb-history'))
+      tab === 'rb-bullish' ||
+      tab === 'rb-bearish' ||
+      (isLive && (tab === 'backside-history' || tab === 'rb-bull-history' || tab === 'rb-bear-history'))
     ? tab
     : 'strongest';
   qs('tab-strongest')?.classList.toggle('active', activeTab === 'strongest');
@@ -427,11 +469,29 @@ function setTab(tab) {
   qs('tab-rvol')?.classList.toggle('active', activeTab === 'rvol');
   qs('tab-hp')?.classList.toggle('active', activeTab === 'hp');
   qs('tab-backside')?.classList.toggle('active', activeTab === 'backside');
-  qs('tab-rubber-band')?.classList.toggle('active', activeTab === 'rubber-band');
+  qs('tab-rubber-band-bullish')?.classList.toggle('active', activeTab === 'rb-bullish');
+  qs('tab-rubber-band-bearish')?.classList.toggle('active', activeTab === 'rb-bearish');
   qs('tab-backside-history')?.classList.toggle('active', activeTab === 'backside-history');
-  qs('tab-rb-history')?.classList.toggle('active', activeTab === 'rb-history');
+  qs('tab-rb-bull-history')?.classList.toggle('active', activeTab === 'rb-bull-history');
+  qs('tab-rb-bear-history')?.classList.toggle('active', activeTab === 'rb-bear-history');
+  applyActiveTabTone();
   renderTableHeader();
   renderRows(lastSnapshot);
+}
+
+function applyActiveTabTone() {
+  const wrap = document.querySelector('.table-wrap');
+  if (!wrap) {
+    return;
+  }
+  wrap.classList.toggle(
+    'tone-bullish',
+    activeTab === 'rb-bullish' || activeTab === 'rb-bull-history',
+  );
+  wrap.classList.toggle(
+    'tone-bearish',
+    activeTab === 'rb-bearish' || activeTab === 'rb-bear-history',
+  );
 }
 
 function updateTabLabels(data) {
@@ -440,17 +500,21 @@ function updateTabLabels(data) {
   const rvolCount = (data?.rvol_candidates || []).length;
   const hpCount = (data?.hard_pass_candidates || []).length;
   const backsideCount = (data?.backside_candidates || []).length;
-  const rubberBandCount = (data?.rubber_band_candidates || []).length;
+  const rbBullCount = rbBullishCandidates(data).length;
+  const rbBearCount = rbBearishCandidates(data).length;
   const backsideHistoryCount = (backsideHistory || []).reduce((sum, item) => sum + ((item.rows || []).length), 0);
-  const rbHistoryCount = (rbHistory || []).reduce((sum, item) => sum + ((item.rows || []).length), 0);
+  const rbBullHistoryCount = (rbBullHistory || []).reduce((sum, item) => sum + ((item.rows || []).length), 0);
+  const rbBearHistoryCount = (rbBearHistory || []).reduce((sum, item) => sum + ((item.rows || []).length), 0);
   if (qs('tab-strongest')) qs('tab-strongest').textContent = `Strongest (${strongestCount})`;
   if (qs('tab-weakest')) qs('tab-weakest').textContent = `Weakest (${weakestCount})`;
   if (qs('tab-rvol')) qs('tab-rvol').textContent = `RVOL (${rvolCount})`;
   if (qs('tab-hp')) qs('tab-hp').textContent = `HP (${hpCount})`;
   if (qs('tab-backside')) qs('tab-backside').textContent = `Backside (${backsideCount})`;
-  if (qs('tab-rubber-band')) qs('tab-rubber-band').textContent = `Rubber Band (${rubberBandCount})`;
+  if (qs('tab-rubber-band-bullish')) qs('tab-rubber-band-bullish').textContent = `RB Bullish (${rbBullCount})`;
+  if (qs('tab-rubber-band-bearish')) qs('tab-rubber-band-bearish').textContent = `RB Bearish (${rbBearCount})`;
   if (qs('tab-backside-history')) qs('tab-backside-history').textContent = `Backside Historical (${backsideHistoryCount})`;
-  if (qs('tab-rb-history')) qs('tab-rb-history').textContent = `RB Historical (${rbHistoryCount})`;
+  if (qs('tab-rb-bull-history')) qs('tab-rb-bull-history').textContent = `RB Bull Historical (${rbBullHistoryCount})`;
+  if (qs('tab-rb-bear-history')) qs('tab-rb-bear-history').textContent = `RB Bear Historical (${rbBearHistoryCount})`;
 }
 
 function resetBacksideHistoryState() {
@@ -462,13 +526,22 @@ function resetBacksideHistoryState() {
   hasBacksideHistoryBaseline = false;
 }
 
-function resetRBHistoryState() {
-  rbHistory = [];
-  rbHistoryByAsOf = new Map();
-  rbHistoryDateNY = '';
-  rbHistoryKnownKeys = new Set();
-  rbHistoryNewKeys = new Set();
-  hasRBHistoryBaseline = false;
+function resetRBBullHistoryState() {
+  rbBullHistory = [];
+  rbBullHistoryByAsOf = new Map();
+  rbBullHistoryDateNY = '';
+  rbBullHistoryKnownKeys = new Set();
+  rbBullHistoryNewKeys = new Set();
+  hasRBBullHistoryBaseline = false;
+}
+
+function resetRBBearHistoryState() {
+  rbBearHistory = [];
+  rbBearHistoryByAsOf = new Map();
+  rbBearHistoryDateNY = '';
+  rbBearHistoryKnownKeys = new Set();
+  rbBearHistoryNewKeys = new Set();
+  hasRBBearHistoryBaseline = false;
 }
 
 async function refreshBacksideHistory(mode) {
@@ -549,9 +622,9 @@ async function refreshBacksideHistory(mode) {
   return newlyAdded.size;
 }
 
-async function refreshRBHistory(mode) {
+async function refreshRBBullHistory(mode) {
   if (mode !== 'live') {
-    resetRBHistoryState();
+    resetRBBullHistoryState();
     return 0;
   }
   const params = new URLSearchParams({ mode: 'live' });
@@ -559,18 +632,18 @@ async function refreshRBHistory(mode) {
   if (date) {
     params.set('date', date);
   }
-  const res = await fetch(`/api/rb-history?${params.toString()}`, { cache: 'no-store' });
+  const res = await fetch(`/api/rb-bull-history?${params.toString()}`, { cache: 'no-store' });
   if (!res.ok) {
     throw new Error(await res.text());
   }
   const data = await res.json();
   const items = Array.isArray(data.items) ? data.items : [];
   const nextDateNY = String(data.date_ny || date || '').trim();
-  if (nextDateNY && rbHistoryDateNY && nextDateNY !== rbHistoryDateNY) {
-    resetRBHistoryState();
+  if (nextDateNY && rbBullHistoryDateNY && nextDateNY !== rbBullHistoryDateNY) {
+    resetRBBullHistoryState();
   }
-  if (nextDateNY && !rbHistoryDateNY) {
-    rbHistoryDateNY = nextDateNY;
+  if (nextDateNY && !rbBullHistoryDateNY) {
+    rbBullHistoryDateNY = nextDateNY;
   }
 
   const newlyAdded = new Set();
@@ -579,7 +652,7 @@ async function refreshRBHistory(mode) {
     if (!asOf) {
       continue;
     }
-    const existing = rbHistoryByAsOf.get(asOf) || {
+    const existing = rbBullHistoryByAsOf.get(asOf) || {
       time_label: item.time_label || '',
       as_of_ny: asOf,
       rows: [],
@@ -594,7 +667,7 @@ async function refreshRBHistory(mode) {
       if (!rowKeys.has(key)) {
         existing.rows.push(c);
         rowKeys.add(key);
-        if (hasRBHistoryBaseline && !rbHistoryKnownKeys.has(key)) {
+        if (hasRBBullHistoryBaseline && !rbBullHistoryKnownKeys.has(key)) {
           newlyAdded.add(key);
         }
       }
@@ -605,10 +678,10 @@ async function refreshRBHistory(mode) {
       if (ar !== br) return ar - br;
       return String(a?.symbol || '').localeCompare(String(b?.symbol || ''));
     });
-    rbHistoryByAsOf.set(asOf, existing);
+    rbBullHistoryByAsOf.set(asOf, existing);
   }
 
-  rbHistory = Array.from(rbHistoryByAsOf.values()).sort((a, b) => {
+  rbBullHistory = Array.from(rbBullHistoryByAsOf.values()).sort((a, b) => {
     const ak = String(a?.as_of_ny || '');
     const bk = String(b?.as_of_ny || '');
     if (ak === bk) return 0;
@@ -616,14 +689,92 @@ async function refreshRBHistory(mode) {
   });
 
   const nextKnown = new Set();
-  for (const item of rbHistory) {
+  for (const item of rbBullHistory) {
     for (const c of item.rows || []) {
       nextKnown.add(`${item.as_of_ny || ''}|${c.symbol || ''}`);
     }
   }
-  rbHistoryNewKeys = newlyAdded;
-  rbHistoryKnownKeys = nextKnown;
-  hasRBHistoryBaseline = true;
+  rbBullHistoryNewKeys = newlyAdded;
+  rbBullHistoryKnownKeys = nextKnown;
+  hasRBBullHistoryBaseline = true;
+  return newlyAdded.size;
+}
+
+async function refreshRBBearHistory(mode) {
+  if (mode !== 'live') {
+    resetRBBearHistoryState();
+    return 0;
+  }
+  const params = new URLSearchParams({ mode: 'live' });
+  const date = qs('date')?.value;
+  if (date) {
+    params.set('date', date);
+  }
+  const res = await fetch(`/api/rb-bear-history?${params.toString()}`, { cache: 'no-store' });
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+  const data = await res.json();
+  const items = Array.isArray(data.items) ? data.items : [];
+  const nextDateNY = String(data.date_ny || date || '').trim();
+  if (nextDateNY && rbBearHistoryDateNY && nextDateNY !== rbBearHistoryDateNY) {
+    resetRBBearHistoryState();
+  }
+  if (nextDateNY && !rbBearHistoryDateNY) {
+    rbBearHistoryDateNY = nextDateNY;
+  }
+
+  const newlyAdded = new Set();
+  for (const item of items) {
+    const asOf = String(item.as_of_ny || '').trim();
+    if (!asOf) {
+      continue;
+    }
+    const existing = rbBearHistoryByAsOf.get(asOf) || {
+      time_label: item.time_label || '',
+      as_of_ny: asOf,
+      rows: [],
+    };
+    if (item.time_label) {
+      existing.time_label = item.time_label;
+    }
+
+    const rowKeys = new Set((existing.rows || []).map((row) => `${asOf}|${row.symbol || ''}`));
+    for (const c of item.rows || []) {
+      const key = `${asOf}|${c.symbol || ''}`;
+      if (!rowKeys.has(key)) {
+        existing.rows.push(c);
+        rowKeys.add(key);
+        if (hasRBBearHistoryBaseline && !rbBearHistoryKnownKeys.has(key)) {
+          newlyAdded.add(key);
+        }
+      }
+    }
+    existing.rows.sort((a, b) => {
+      const ar = Number(a?.rank ?? 0);
+      const br = Number(b?.rank ?? 0);
+      if (ar !== br) return ar - br;
+      return String(a?.symbol || '').localeCompare(String(b?.symbol || ''));
+    });
+    rbBearHistoryByAsOf.set(asOf, existing);
+  }
+
+  rbBearHistory = Array.from(rbBearHistoryByAsOf.values()).sort((a, b) => {
+    const ak = String(a?.as_of_ny || '');
+    const bk = String(b?.as_of_ny || '');
+    if (ak === bk) return 0;
+    return ak < bk ? 1 : -1;
+  });
+
+  const nextKnown = new Set();
+  for (const item of rbBearHistory) {
+    for (const c of item.rows || []) {
+      nextKnown.add(`${item.as_of_ny || ''}|${c.symbol || ''}`);
+    }
+  }
+  rbBearHistoryNewKeys = newlyAdded;
+  rbBearHistoryKnownKeys = nextKnown;
+  hasRBBearHistoryBaseline = true;
   return newlyAdded.size;
 }
 
@@ -707,14 +858,19 @@ async function refresh() {
     }
     const data = await res.json();
     const nextBacksideSignature = (data.backside_candidates || []).map((c) => `${c.symbol}:${c.rank}`).join('|');
-    const nextRubberBandSignature = (data.rubber_band_candidates || []).map((c) => `${c.symbol}:${c.rank}`).join('|');
+    const nextRBBullishSignature = rbBullishCandidates(data).map((c) => `${c.symbol}:${c.rank}`).join('|');
+    const nextRBBearishSignature = rbBearishCandidates(data).map((c) => `${c.symbol}:${c.rank}`).join('|');
     if (mode === 'live') {
       const shouldPlayBacksideAlert = hasBacksideSignatureBaseline
         && !!nextBacksideSignature
         && nextBacksideSignature !== lastBacksideSignature;
-      const shouldPlayRBAlert = hasRubberBandSignatureBaseline
-        && !!nextRubberBandSignature
-        && nextRubberBandSignature !== lastRubberBandSignature;
+      const shouldPlayRBBullAlert = hasRBBullishSignatureBaseline
+        && !!nextRBBullishSignature
+        && nextRBBullishSignature !== lastRBBullishSignature;
+      const shouldPlayRBBearAlert = hasRBBearishSignatureBaseline
+        && !!nextRBBearishSignature
+        && nextRBBearishSignature !== lastRBBearishSignature;
+      const shouldPlayRBAlert = shouldPlayRBBullAlert || shouldPlayRBBearAlert;
       if (soundEnabled) {
         if (shouldPlayBacksideAlert && shouldPlayRBAlert) {
           playBacksideChangeAlert();
@@ -731,23 +887,29 @@ async function refresh() {
       }
       lastBacksideSignature = nextBacksideSignature;
       hasBacksideSignatureBaseline = true;
-      lastRubberBandSignature = nextRubberBandSignature;
-      hasRubberBandSignatureBaseline = true;
+      lastRBBullishSignature = nextRBBullishSignature;
+      hasRBBullishSignatureBaseline = true;
+      lastRBBearishSignature = nextRBBearishSignature;
+      hasRBBearishSignatureBaseline = true;
     } else {
       lastBacksideSignature = '';
       hasBacksideSignatureBaseline = false;
-      lastRubberBandSignature = '';
-      hasRubberBandSignatureBaseline = false;
+      lastRBBullishSignature = '';
+      hasRBBullishSignatureBaseline = false;
+      lastRBBearishSignature = '';
+      hasRBBearishSignatureBaseline = false;
     }
     lastSnapshot = data;
     let backsideHistoryAdditions = 0;
-    let rbHistoryAdditions = 0;
+    let rbBullHistoryAdditions = 0;
+    let rbBearHistoryAdditions = 0;
     try {
       backsideHistoryAdditions = await refreshBacksideHistory(mode);
-      rbHistoryAdditions = await refreshRBHistory(mode);
+      rbBullHistoryAdditions = await refreshRBBullHistory(mode);
+      rbBearHistoryAdditions = await refreshRBBearHistory(mode);
       if (mode === 'live' && soundEnabled) {
         const shouldPlayBacksideHistoryAlert = backsideHistoryAdditions > 0 && !playedBacksideAlert;
-        const shouldPlayRBHistoryAlert = rbHistoryAdditions > 0 && !playedRBAlert;
+        const shouldPlayRBHistoryAlert = (rbBullHistoryAdditions > 0 || rbBearHistoryAdditions > 0) && !playedRBAlert;
         if (shouldPlayBacksideHistoryAlert && shouldPlayRBHistoryAlert) {
           playBacksideChangeAlert(true);
           playRubberBandChangeAlert(true, 0.34);
@@ -760,7 +922,8 @@ async function refresh() {
     } catch (histErr) {
       console.error(histErr);
       resetBacksideHistoryState();
-      resetRBHistoryState();
+      resetRBBullHistoryState();
+      resetRBBearHistoryState();
     }
 
     const gateSuffix = built.gateChanges > 0 ? ` | Gate overrides: ${built.gateChanges}` : '';
@@ -773,8 +936,9 @@ async function refresh() {
     const weakestTotal = data.count_weakest ?? ((data.weakest_candidates || []).length);
     const hardPassTotal = data.count_hard_pass ?? (dbg.passed_all_gates || 0);
     const backsideTotal = data.count_backside ?? ((data.backside_candidates || []).length);
-    const rubberBandTotal = data.count_rubber_band ?? ((data.rubber_band_candidates || []).length);
-    const splitText = ` | Directional pass: strongest=${strongestTotal}, weakest=${weakestTotal}, hard_pass=${hardPassTotal}, backside=${backsideTotal}, rb=${rubberBandTotal}`;
+    const rbBullTotal = data.count_rubber_band_bullish ?? data.count_rubber_band ?? rbBullishCandidates(data).length;
+    const rbBearTotal = data.count_rubber_band_bearish ?? rbBearishCandidates(data).length;
+    const splitText = ` | Directional pass: strongest=${strongestTotal}, weakest=${weakestTotal}, hard_pass=${hardPassTotal}, backside=${backsideTotal}, rb_bull=${rbBullTotal}, rb_bear=${rbBearTotal}`;
     const msgText = data.message ? ` | Note: ${data.message}` : '';
     qs('meta').textContent = `Mode: ${data.mode} | As-of NY: ${data.as_of_ny} | Generated: ${data.generated_at_ny} | Benchmark: ${data.benchmark} | Seen: ${data.count_seen} | Ranked: ${data.count_ranked}${splitText}${hardPassText}${gateSuffix}${dbgText}${sourceText}${maxText}${msgText}`;
     updateTabLabels(data);
@@ -783,11 +947,14 @@ async function refresh() {
     console.error(err);
     lastSnapshot = null;
     resetBacksideHistoryState();
-    resetRBHistoryState();
+    resetRBBullHistoryState();
+    resetRBBearHistoryState();
     lastBacksideSignature = '';
     hasBacksideSignatureBaseline = false;
-    lastRubberBandSignature = '';
-    hasRubberBandSignatureBaseline = false;
+    lastRBBullishSignature = '';
+    hasRBBullishSignatureBaseline = false;
+    lastRBBearishSignature = '';
+    hasRBBearishSignatureBaseline = false;
     updateTabLabels(null);
     qs('meta').textContent = `Error: ${err.message}`;
   } finally {
@@ -842,9 +1009,11 @@ function wire() {
   qs('tab-rvol')?.addEventListener('click', () => setTab('rvol'));
   qs('tab-hp')?.addEventListener('click', () => setTab('hp'));
   qs('tab-backside')?.addEventListener('click', () => setTab('backside'));
-  qs('tab-rubber-band')?.addEventListener('click', () => setTab('rubber-band'));
+  qs('tab-rubber-band-bullish')?.addEventListener('click', () => setTab('rb-bullish'));
+  qs('tab-rubber-band-bearish')?.addEventListener('click', () => setTab('rb-bearish'));
   qs('tab-backside-history')?.addEventListener('click', () => setTab('backside-history'));
-  qs('tab-rb-history')?.addEventListener('click', () => setTab('rb-history'));
+  qs('tab-rb-bull-history')?.addEventListener('click', () => setTab('rb-bull-history'));
+  qs('tab-rb-bear-history')?.addEventListener('click', () => setTab('rb-bear-history'));
 }
 
 function setLoading(isLoading, baseText = 'Loading data') {

@@ -307,3 +307,64 @@ func TestRubberBandSetupScoreRequiresGreenSignalCandle(t *testing.T) {
 		t.Fatalf("expected setup to fail for non-green signal candle, got score %.4f", score)
 	}
 }
+
+func TestRubberBandBearishSetupScoreDetectsRedDoubleBarBreak(t *testing.T) {
+	st := &SymbolState{
+		Bars: []intradayBar{
+			testIntradayBarOHLC(10.20, 10.25, 10.10, 10.22),
+			testIntradayBarOHLC(10.22, 10.24, 10.05, 10.16),
+			testIntradayBarOHLC(10.16, 10.18, 10.00, 10.12),
+		},
+		BarMinuteNs: int64(time.Minute),
+		BarOpenPxN:  int64(math.Round(10.12 * pxScale)),
+		BarHighPxN:  int64(math.Round(10.14 * pxScale)),
+		BarLowPxN:   int64(math.Round(9.92 * pxScale)),
+		BarClosePxN: int64(math.Round(9.98 * pxScale)),
+	}
+
+	score, ok := rubberBandBearishSetupScore(st)
+	if !ok {
+		t.Fatalf("expected bearish rubber-band setup to pass")
+	}
+	if score <= 0 {
+		t.Fatalf("expected positive score, got %.4f", score)
+	}
+}
+
+func TestRubberBandBearishSetupScoreRequiresTwoPriorLowBreaks(t *testing.T) {
+	st := &SymbolState{
+		Bars: []intradayBar{
+			testIntradayBarOHLC(10.25, 10.30, 10.10, 10.20),
+			testIntradayBarOHLC(10.20, 10.24, 9.95, 10.02),
+			testIntradayBarOHLC(10.02, 10.05, 10.00, 10.01),
+		},
+		BarMinuteNs: int64(time.Minute),
+		BarOpenPxN:  int64(math.Round(10.01 * pxScale)),
+		BarHighPxN:  int64(math.Round(10.03 * pxScale)),
+		BarLowPxN:   int64(math.Round(9.98 * pxScale)),
+		BarClosePxN: int64(math.Round(9.99 * pxScale)),
+	}
+
+	if score, ok := rubberBandBearishSetupScore(st); ok {
+		t.Fatalf("expected bearish setup to fail when only one prior low is cleared, got score %.4f", score)
+	}
+}
+
+func TestRubberBandBearishSetupScoreRequiresRedSignalCandle(t *testing.T) {
+	st := &SymbolState{
+		Bars: []intradayBar{
+			testIntradayBarOHLC(10.20, 10.25, 10.08, 10.12),
+			testIntradayBarOHLC(10.12, 10.15, 10.02, 10.05),
+			testIntradayBarOHLC(10.05, 10.07, 10.00, 10.02),
+		},
+		BarMinuteNs: int64(time.Minute),
+		BarOpenPxN:  int64(math.Round(9.96 * pxScale)),
+		BarHighPxN:  int64(math.Round(10.02 * pxScale)),
+		BarLowPxN:   int64(math.Round(9.90 * pxScale)),
+		BarClosePxN: int64(math.Round(10.01 * pxScale)),
+	}
+
+	if score, ok := rubberBandBearishSetupScore(st); ok {
+		t.Fatalf("expected bearish setup to fail for non-red signal candle, got score %.4f", score)
+	}
+}

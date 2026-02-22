@@ -230,6 +230,40 @@ button.ghost {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 2px 8px rgba(9, 31, 49, 0.22);
 }
 
+.tab-btn-bullish {
+  background: #edf8f0;
+  color: #1d6440;
+  border-color: #cfe8d8;
+}
+
+.tab-btn-bullish:hover {
+  background: #e0f2e6;
+}
+
+.tab-btn-bullish.active {
+  background: linear-gradient(180deg, #1f7e50, #17633f);
+  color: #f4fff8;
+  border-color: #17633f;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1), 0 2px 8px rgba(20, 72, 47, 0.28);
+}
+
+.tab-btn-bearish {
+  background: #fceff0;
+  color: #8a2c36;
+  border-color: #f0cfd3;
+}
+
+.tab-btn-bearish:hover {
+  background: #fae1e4;
+}
+
+.tab-btn-bearish.active {
+  background: linear-gradient(180deg, #a63b47, #862d38);
+  color: #fff5f6;
+  border-color: #862d38;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12), 0 2px 8px rgba(110, 28, 39, 0.3);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -255,6 +289,32 @@ th {
 
 tr:hover td {
   background: #f8fbfc;
+}
+
+.table-wrap.tone-bullish th {
+  background: linear-gradient(180deg, #f3fcf6, #eaf7ee);
+  color: #1f5d3d;
+}
+
+.table-wrap.tone-bearish th {
+  background: linear-gradient(180deg, #fff5f6, #fcebed);
+  color: #7a2430;
+}
+
+.row-bullish-signal td {
+  background: #f7fcf8;
+}
+
+.row-bearish-signal td {
+  background: #fff7f8;
+}
+
+.row-bullish-signal td a {
+  color: #157448;
+}
+
+.row-bearish-signal td a {
+  color: #9f2e3a;
 }
 
 .row-new td {

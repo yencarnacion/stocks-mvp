@@ -19,6 +19,8 @@ import (
 type tabSpec struct {
 	Title  string
 	Signal string
+	Action string
+	Setup  string
 	Pick   func(app.TopSnapshot) []app.Candidate
 }
 
@@ -130,28 +132,48 @@ func buildMarkdown(snaps []app.TopSnapshot, dayNY time.Time, loc *time.Location,
 	b.WriteString(fmt.Sprintf("- Snapshots in report: `%d`\n\n", len(snaps)))
 
 	tabs := []tabSpec{
-		{Title: "Strongest", Signal: "buy", Pick: func(s app.TopSnapshot) []app.Candidate { return s.StrongestCandidates }},
-		{Title: "Weakest", Signal: "sell", Pick: func(s app.TopSnapshot) []app.Candidate { return s.WeakestCandidates }},
-		{Title: "Backside", Signal: "buy", Pick: func(s app.TopSnapshot) []app.Candidate { return s.BacksideCandidates }},
-		{Title: "Rubber Band", Signal: "buy", Pick: func(s app.TopSnapshot) []app.Candidate { return s.RubberBandCandidates }},
+		{Title: "Strongest", Signal: "buy", Action: "BUY", Setup: "Relative-strength momentum leaders", Pick: func(s app.TopSnapshot) []app.Candidate { return s.StrongestCandidates }},
+		{Title: "Weakest", Signal: "sell", Action: "SELL", Setup: "Relative-weakness momentum laggards", Pick: func(s app.TopSnapshot) []app.Candidate { return s.WeakestCandidates }},
+		{Title: "Backside", Signal: "buy", Action: "BUY", Setup: "Backside reclaim continuation setup", Pick: func(s app.TopSnapshot) []app.Candidate { return s.BacksideCandidates }},
+		{Title: "Rubber Band Bullish", Signal: "buy", Pick: func(s app.TopSnapshot) []app.Candidate {
+			if len(s.RubberBandBullishCandidates) > 0 {
+				return s.RubberBandBullishCandidates
+			}
+			return s.RubberBandCandidates
+		}},
+		{Title: "Rubber Band Bearish", Signal: "sell", Action: "SELL", Setup: "Red candle clears lows of 2+ preceding candles", Pick: func(s app.TopSnapshot) []app.Candidate { return s.RubberBandBearishCandidates }},
+	}
+	// Fill bullish RB metadata while preserving fallback logic above.
+	for i := range tabs {
+		if tabs[i].Title == "Rubber Band Bullish" {
+			tabs[i].Action = "BUY"
+			tabs[i].Setup = "Green candle clears highs of 2+ preceding candles"
+		}
 	}
 
 	for _, tab := range tabs {
 		items := collectTimed(snaps, tab.Pick)
 		b.WriteString(fmt.Sprintf("## %s\n\n", tab.Title))
+		if strings.TrimSpace(tab.Action) != "" {
+			b.WriteString(fmt.Sprintf("- Action bias: `%s`\n", tab.Action))
+		}
+		if strings.TrimSpace(tab.Setup) != "" {
+			b.WriteString(fmt.Sprintf("- Setup: %s\n\n", tab.Setup))
+		}
 		if len(items) == 0 {
 			b.WriteString("_No signals found for this tab on the selected date._\n\n")
 			continue
 		}
 		for _, ts := range items {
 			b.WriteString(fmt.Sprintf("### %s ET\n\n", ts.TimeLabel))
-			b.WriteString("| # | Symbol | Score | Price | RVOL | Spread bps | $/min | ADR x | RS vs Bench |\n")
-			b.WriteString("|---:|:------|------:|------:|-----:|-----------:|------:|------:|------------:|\n")
+			b.WriteString("| # | Action | Symbol | Score | Price | RVOL | Spread bps | $/min | ADR x | RS vs Bench |\n")
+			b.WriteString("|---:|:------:|:------|------:|------:|-----:|-----------:|------:|------:|------------:|\n")
 			for _, c := range ts.Rows {
 				sym := formatSymbolMarkdown(c.Symbol, tickerTpl, ts.AsOfNY, tab.Signal)
 				b.WriteString(fmt.Sprintf(
-					"| %d | %s | %.4f | %.2f | %.2f | %.2f | %s | %.2f | %.2f%% |\n",
+					"| %d | %s | %s | %.4f | %.2f | %.2f | %.2f | %s | %.2f | %.2f%% |\n",
 					c.Rank,
+					tab.Action,
 					sym,
 					c.Score,
 					c.Price,

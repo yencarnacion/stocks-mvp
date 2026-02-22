@@ -62,6 +62,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/time", s.handleTime)
 	mux.HandleFunc("/api/backside-history", s.handleBacksideHistory)
+	mux.HandleFunc("/api/rb-history", s.handleRBHistory)
 
 	sub, _ := fs.Sub(uiFS, "ui")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
@@ -210,6 +211,18 @@ func (s *Server) handleTime(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleBacksideHistory(w http.ResponseWriter, r *http.Request) {
+	s.handleSignalHistory(w, r, func(snap TopSnapshot) []Candidate {
+		return snap.BacksideCandidates
+	})
+}
+
+func (s *Server) handleRBHistory(w http.ResponseWriter, r *http.Request) {
+	s.handleSignalHistory(w, r, func(snap TopSnapshot) []Candidate {
+		return snap.RubberBandCandidates
+	})
+}
+
+func (s *Server) handleSignalHistory(w http.ResponseWriter, r *http.Request, pick func(TopSnapshot) []Candidate) {
 	w.Header().Set("Content-Type", "application/json")
 
 	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
@@ -243,7 +256,7 @@ func (s *Server) handleBacksideHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := collectBacksideHistoryItems(s.sc.GetHistory(), targetDate, s.loc)
+	items := collectSignalHistoryItems(s.sc.GetHistory(), targetDate, s.loc, pick)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"mode":     mode,
 		"date_ny":  targetDate,
@@ -254,6 +267,18 @@ func (s *Server) handleBacksideHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func collectBacksideHistoryItems(history []TopSnapshot, targetDate string, loc *time.Location) []BacksideHistoryItem {
+	return collectSignalHistoryItems(history, targetDate, loc, func(snap TopSnapshot) []Candidate {
+		return snap.BacksideCandidates
+	})
+}
+
+func collectRubberBandHistoryItems(history []TopSnapshot, targetDate string, loc *time.Location) []BacksideHistoryItem {
+	return collectSignalHistoryItems(history, targetDate, loc, func(snap TopSnapshot) []Candidate {
+		return snap.RubberBandCandidates
+	})
+}
+
+func collectSignalHistoryItems(history []TopSnapshot, targetDate string, loc *time.Location, pick func(TopSnapshot) []Candidate) []BacksideHistoryItem {
 	if len(history) == 0 {
 		return []BacksideHistoryItem{}
 	}
@@ -263,12 +288,13 @@ func collectBacksideHistoryItems(history []TopSnapshot, targetDate string, loc *
 		if snap.GeneratedAt.In(loc).Format("2006-01-02") != targetDate {
 			continue
 		}
-		if len(snap.BacksideCandidates) == 0 {
+		rowsSrc := pick(snap)
+		if len(rowsSrc) == 0 {
 			continue
 		}
 
-		rows := make([]Candidate, len(snap.BacksideCandidates))
-		copy(rows, snap.BacksideCandidates)
+		rows := make([]Candidate, len(rowsSrc))
+		copy(rows, rowsSrc)
 		out = append(out, BacksideHistoryItem{
 			TimeLabel: snap.GeneratedAt.In(loc).Format("15:04"),
 			AsOfNY:    snap.AsOfNY,

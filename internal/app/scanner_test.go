@@ -183,6 +183,15 @@ func testIntradayBar(high, low, close float64) intradayBar {
 	}
 }
 
+func testIntradayBarOHLC(open, high, low, close float64) intradayBar {
+	return intradayBar{
+		OpenPxN:  int64(math.Round(open * pxScale)),
+		HighPxN:  int64(math.Round(high * pxScale)),
+		LowPxN:   int64(math.Round(low * pxScale)),
+		ClosePxN: int64(math.Round(close * pxScale)),
+	}
+}
+
 func TestFindBacksideHHIdxRequiresMinRally(t *testing.T) {
 	bars := []intradayBar{
 		testIntradayBar(9.95, 9.90, 9.92),
@@ -235,5 +244,66 @@ func TestFindBacksideHLAfterHHIdxFindsPivotLow(t *testing.T) {
 
 	if got := findBacksideHLAfterHHIdx(bars, 2); got != 4 {
 		t.Fatalf("expected pivot HL at idx=4 after HH idx=2, got idx=%d", got)
+	}
+}
+
+func TestRubberBandSetupScoreDetectsGreenDoubleBarBreak(t *testing.T) {
+	st := &SymbolState{
+		Bars: []intradayBar{
+			testIntradayBarOHLC(9.96, 10.00, 9.92, 9.98),
+			testIntradayBarOHLC(10.00, 10.05, 9.98, 10.01),
+			testIntradayBarOHLC(10.01, 10.08, 9.99, 10.02),
+		},
+		BarMinuteNs: int64(time.Minute),
+		BarOpenPxN:  int64(math.Round(10.02 * pxScale)),
+		BarHighPxN:  int64(math.Round(10.20 * pxScale)),
+		BarLowPxN:   int64(math.Round(10.00 * pxScale)),
+		BarClosePxN: int64(math.Round(10.15 * pxScale)),
+	}
+
+	score, ok := rubberBandSetupScore(st)
+	if !ok {
+		t.Fatalf("expected rubber-band setup to pass")
+	}
+	if score <= 0 {
+		t.Fatalf("expected positive score, got %.4f", score)
+	}
+}
+
+func TestRubberBandSetupScoreRequiresTwoPriorHighBreaks(t *testing.T) {
+	st := &SymbolState{
+		Bars: []intradayBar{
+			testIntradayBarOHLC(9.95, 10.00, 9.90, 9.98),
+			testIntradayBarOHLC(10.00, 10.12, 9.99, 10.05),
+			testIntradayBarOHLC(10.05, 10.08, 10.00, 10.04),
+		},
+		BarMinuteNs: int64(time.Minute),
+		BarOpenPxN:  int64(math.Round(10.04 * pxScale)),
+		BarHighPxN:  int64(math.Round(10.10 * pxScale)),
+		BarLowPxN:   int64(math.Round(10.02 * pxScale)),
+		BarClosePxN: int64(math.Round(10.09 * pxScale)),
+	}
+
+	if score, ok := rubberBandSetupScore(st); ok {
+		t.Fatalf("expected setup to fail when only one prior high is cleared, got score %.4f", score)
+	}
+}
+
+func TestRubberBandSetupScoreRequiresGreenSignalCandle(t *testing.T) {
+	st := &SymbolState{
+		Bars: []intradayBar{
+			testIntradayBarOHLC(9.95, 10.00, 9.90, 9.98),
+			testIntradayBarOHLC(9.98, 10.02, 9.95, 10.00),
+			testIntradayBarOHLC(10.00, 10.04, 9.98, 10.01),
+		},
+		BarMinuteNs: int64(time.Minute),
+		BarOpenPxN:  int64(math.Round(10.15 * pxScale)),
+		BarHighPxN:  int64(math.Round(10.20 * pxScale)),
+		BarLowPxN:   int64(math.Round(9.99 * pxScale)),
+		BarClosePxN: int64(math.Round(10.05 * pxScale)),
+	}
+
+	if score, ok := rubberBandSetupScore(st); ok {
+		t.Fatalf("expected setup to fail for non-green signal candle, got score %.4f", score)
 	}
 }

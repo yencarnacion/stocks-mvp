@@ -5,6 +5,8 @@ let clockTimer = null;
 let audioCtx = null;
 let lastBacksideSignature = '';
 let hasBacksideSignatureBaseline = false;
+let lastRubberBandSignature = '';
+let hasRubberBandSignatureBaseline = false;
 let soundEnabled = false;
 let defaultGates = {};
 let tickerURLTemplate = '';
@@ -16,6 +18,12 @@ let backsideHistoryDateNY = '';
 let backsideHistoryKnownKeys = new Set();
 let backsideHistoryNewKeys = new Set();
 let hasBacksideHistoryBaseline = false;
+let rbHistory = [];
+let rbHistoryByAsOf = new Map();
+let rbHistoryDateNY = '';
+let rbHistoryKnownKeys = new Set();
+let rbHistoryNewKeys = new Set();
+let hasRBHistoryBaseline = false;
 const nyClockFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York',
   year: 'numeric',
@@ -60,7 +68,7 @@ const MAIN_TABLE_HEADERS = [
   'Upd ms',
 ];
 
-const BACKSIDE_HISTORY_HEADERS = [
+const HISTORY_TAB_HEADERS = [
   'Time',
   '#',
   'Symbol',
@@ -142,12 +150,12 @@ function wireAudioUnlock() {
   document.addEventListener('keydown', unlock, { once: true });
 }
 
-function playBacksideChangeAlert(force = false) {
+function playBacksideChangeAlert(force = false, startOffsetSec = 0) {
   if (!force && !soundEnabled) return;
   const ctx = ensureAudioContext();
   if (!ctx) return;
 
-  const now = ctx.currentTime;
+  const now = ctx.currentTime + Math.max(0, Number(startOffsetSec) || 0);
   const beepAt = (start, freq) => {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -164,6 +172,31 @@ function playBacksideChangeAlert(force = false) {
 
   beepAt(now + 0.00, 2200);
   beepAt(now + 0.17, 2480);
+}
+
+function playRubberBandChangeAlert(force = false, startOffsetSec = 0) {
+  if (!force && !soundEnabled) return;
+  const ctx = ensureAudioContext();
+  if (!ctx) return;
+
+  const now = ctx.currentTime + Math.max(0, Number(startOffsetSec) || 0);
+  const beepAt = (start, freq) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(freq, start);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.13, start + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.09);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(start);
+    osc.stop(start + 0.095);
+  };
+
+  beepAt(now + 0.00, 3300);
+  beepAt(now + 0.12, 3950);
+  beepAt(now + 0.24, 4700);
 }
 
 async function bootstrapGateDefaults() {
@@ -212,7 +245,7 @@ function openChartBaseFromTemplate(template) {
   return `${trimmed.slice(0, i)}/api/open-chart`;
 }
 
-function formatBacksideHistoryTickerURL(symbol, asOfNY) {
+function formatHistoryTickerURL(symbol, asOfNY, signal = 'buy') {
   const tpl = String(tickerURLTemplate || '').trim();
   const parts = parseAsOfParts(asOfNY);
   const openChartBase = openChartBaseFromTemplate(tpl);
@@ -220,9 +253,9 @@ function formatBacksideHistoryTickerURL(symbol, asOfNY) {
     const q = new URLSearchParams();
     q.set('ticker', symbol);
     if (parts.date) q.set('date', parts.date);
-    // For backside historical links we include optional time=HHMM when available.
+    // For history links we include optional time=HHMM when available.
     if (parts.timeHHMM) q.set('time', parts.timeHHMM);
-    q.set('signal', 'buy');
+    q.set('signal', signal);
     return `${openChartBase}?${q.toString()}`;
   }
   if (!tpl) return '';
@@ -230,7 +263,7 @@ function formatBacksideHistoryTickerURL(symbol, asOfNY) {
     .replaceAll('{symbol}', encodeURIComponent(symbol))
     .replaceAll('{date}', encodeURIComponent(parts.date))
     .replaceAll('{time}', encodeURIComponent(parts.timeHHMM))
-    .replaceAll('{signal}', encodeURIComponent('buy'))
+    .replaceAll('{signal}', encodeURIComponent(signal))
     .replaceAll('{as_of}', encodeURIComponent(parts.asOf));
 }
 
@@ -247,6 +280,9 @@ function listForTab(data) {
   if (!data) return [];
   if (activeTab === 'backside') {
     return data.backside_candidates || [];
+  }
+  if (activeTab === 'rubber-band') {
+    return data.rubber_band_candidates || [];
   }
   if (activeTab === 'rvol') {
     return data.rvol_candidates || [];
@@ -279,7 +315,7 @@ function renderTableHeader() {
   const row = document.querySelector('#tbl thead tr');
   if (!row) return;
   row.innerHTML = '';
-  const headers = activeTab === 'backside-history' ? BACKSIDE_HISTORY_HEADERS : MAIN_TABLE_HEADERS;
+  const headers = activeTab === 'backside-history' || activeTab === 'rb-history' ? HISTORY_TAB_HEADERS : MAIN_TABLE_HEADERS;
   for (const h of headers) {
     const th = document.createElement('th');
     th.textContent = h;
@@ -316,16 +352,16 @@ function renderDefaultRows(data) {
   }
 }
 
-function renderBacksideHistoryRows() {
+function renderHistoryRows(items, newKeys, signal = 'buy') {
   const tbody = document.querySelector('#tbl tbody');
   tbody.innerHTML = '';
 
-  for (const item of backsideHistory) {
+  for (const item of items) {
     for (const c of item.rows || []) {
       const tr = document.createElement('tr');
-      const link = formatBacksideHistoryTickerURL(c.symbol, item.as_of_ny);
+      const link = formatHistoryTickerURL(c.symbol, item.as_of_ny, signal);
       const key = `${item.as_of_ny || ''}|${c.symbol || ''}`;
-      const isNew = backsideHistoryNewKeys.has(key);
+      const isNew = newKeys.has(key);
       if (isNew) {
         tr.classList.add('row-new');
         setTimeout(() => tr.classList.remove('row-new'), 1500);
@@ -352,7 +388,11 @@ function renderBacksideHistoryRows() {
 
 function renderRows(data) {
   if (activeTab === 'backside-history') {
-    renderBacksideHistoryRows();
+    renderHistoryRows(backsideHistory, backsideHistoryNewKeys, 'buy');
+    return;
+  }
+  if (activeTab === 'rb-history') {
+    renderHistoryRows(rbHistory, rbHistoryNewKeys, 'buy');
     return;
   }
   renderDefaultRows(data);
@@ -362,15 +402,24 @@ function syncModeDependentTabs() {
   const mode = qs('mode')?.value;
   const isLive = mode === 'live';
   qs('tab-backside-history')?.classList.toggle('hidden', !isLive);
+  qs('tab-rb-history')?.classList.toggle('hidden', !isLive);
   if (!isLive && activeTab === 'backside-history') {
     activeTab = 'backside';
+  }
+  if (!isLive && activeTab === 'rb-history') {
+    activeTab = 'rubber-band';
   }
 }
 
 function setTab(tab) {
   const mode = qs('mode')?.value || 'live';
   const isLive = mode === 'live';
-  activeTab = tab === 'weakest' || tab === 'rvol' || tab === 'hp' || tab === 'backside' || (isLive && tab === 'backside-history')
+  activeTab = tab === 'weakest' ||
+      tab === 'rvol' ||
+      tab === 'hp' ||
+      tab === 'backside' ||
+      tab === 'rubber-band' ||
+      (isLive && (tab === 'backside-history' || tab === 'rb-history'))
     ? tab
     : 'strongest';
   qs('tab-strongest')?.classList.toggle('active', activeTab === 'strongest');
@@ -378,7 +427,9 @@ function setTab(tab) {
   qs('tab-rvol')?.classList.toggle('active', activeTab === 'rvol');
   qs('tab-hp')?.classList.toggle('active', activeTab === 'hp');
   qs('tab-backside')?.classList.toggle('active', activeTab === 'backside');
+  qs('tab-rubber-band')?.classList.toggle('active', activeTab === 'rubber-band');
   qs('tab-backside-history')?.classList.toggle('active', activeTab === 'backside-history');
+  qs('tab-rb-history')?.classList.toggle('active', activeTab === 'rb-history');
   renderTableHeader();
   renderRows(lastSnapshot);
 }
@@ -389,13 +440,17 @@ function updateTabLabels(data) {
   const rvolCount = (data?.rvol_candidates || []).length;
   const hpCount = (data?.hard_pass_candidates || []).length;
   const backsideCount = (data?.backside_candidates || []).length;
+  const rubberBandCount = (data?.rubber_band_candidates || []).length;
   const backsideHistoryCount = (backsideHistory || []).reduce((sum, item) => sum + ((item.rows || []).length), 0);
+  const rbHistoryCount = (rbHistory || []).reduce((sum, item) => sum + ((item.rows || []).length), 0);
   if (qs('tab-strongest')) qs('tab-strongest').textContent = `Strongest (${strongestCount})`;
   if (qs('tab-weakest')) qs('tab-weakest').textContent = `Weakest (${weakestCount})`;
   if (qs('tab-rvol')) qs('tab-rvol').textContent = `RVOL (${rvolCount})`;
   if (qs('tab-hp')) qs('tab-hp').textContent = `HP (${hpCount})`;
   if (qs('tab-backside')) qs('tab-backside').textContent = `Backside (${backsideCount})`;
+  if (qs('tab-rubber-band')) qs('tab-rubber-band').textContent = `Rubber Band (${rubberBandCount})`;
   if (qs('tab-backside-history')) qs('tab-backside-history').textContent = `Backside Historical (${backsideHistoryCount})`;
+  if (qs('tab-rb-history')) qs('tab-rb-history').textContent = `RB Historical (${rbHistoryCount})`;
 }
 
 function resetBacksideHistoryState() {
@@ -405,6 +460,15 @@ function resetBacksideHistoryState() {
   backsideHistoryKnownKeys = new Set();
   backsideHistoryNewKeys = new Set();
   hasBacksideHistoryBaseline = false;
+}
+
+function resetRBHistoryState() {
+  rbHistory = [];
+  rbHistoryByAsOf = new Map();
+  rbHistoryDateNY = '';
+  rbHistoryKnownKeys = new Set();
+  rbHistoryNewKeys = new Set();
+  hasRBHistoryBaseline = false;
 }
 
 async function refreshBacksideHistory(mode) {
@@ -485,6 +549,84 @@ async function refreshBacksideHistory(mode) {
   return newlyAdded.size;
 }
 
+async function refreshRBHistory(mode) {
+  if (mode !== 'live') {
+    resetRBHistoryState();
+    return 0;
+  }
+  const params = new URLSearchParams({ mode: 'live' });
+  const date = qs('date')?.value;
+  if (date) {
+    params.set('date', date);
+  }
+  const res = await fetch(`/api/rb-history?${params.toString()}`, { cache: 'no-store' });
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+  const data = await res.json();
+  const items = Array.isArray(data.items) ? data.items : [];
+  const nextDateNY = String(data.date_ny || date || '').trim();
+  if (nextDateNY && rbHistoryDateNY && nextDateNY !== rbHistoryDateNY) {
+    resetRBHistoryState();
+  }
+  if (nextDateNY && !rbHistoryDateNY) {
+    rbHistoryDateNY = nextDateNY;
+  }
+
+  const newlyAdded = new Set();
+  for (const item of items) {
+    const asOf = String(item.as_of_ny || '').trim();
+    if (!asOf) {
+      continue;
+    }
+    const existing = rbHistoryByAsOf.get(asOf) || {
+      time_label: item.time_label || '',
+      as_of_ny: asOf,
+      rows: [],
+    };
+    if (item.time_label) {
+      existing.time_label = item.time_label;
+    }
+
+    const rowKeys = new Set((existing.rows || []).map((row) => `${asOf}|${row.symbol || ''}`));
+    for (const c of item.rows || []) {
+      const key = `${asOf}|${c.symbol || ''}`;
+      if (!rowKeys.has(key)) {
+        existing.rows.push(c);
+        rowKeys.add(key);
+        if (hasRBHistoryBaseline && !rbHistoryKnownKeys.has(key)) {
+          newlyAdded.add(key);
+        }
+      }
+    }
+    existing.rows.sort((a, b) => {
+      const ar = Number(a?.rank ?? 0);
+      const br = Number(b?.rank ?? 0);
+      if (ar !== br) return ar - br;
+      return String(a?.symbol || '').localeCompare(String(b?.symbol || ''));
+    });
+    rbHistoryByAsOf.set(asOf, existing);
+  }
+
+  rbHistory = Array.from(rbHistoryByAsOf.values()).sort((a, b) => {
+    const ak = String(a?.as_of_ny || '');
+    const bk = String(b?.as_of_ny || '');
+    if (ak === bk) return 0;
+    return ak < bk ? 1 : -1;
+  });
+
+  const nextKnown = new Set();
+  for (const item of rbHistory) {
+    for (const c of item.rows || []) {
+      nextKnown.add(`${item.as_of_ny || ''}|${c.symbol || ''}`);
+    }
+  }
+  rbHistoryNewKeys = newlyAdded;
+  rbHistoryKnownKeys = nextKnown;
+  hasRBHistoryBaseline = true;
+  return newlyAdded.size;
+}
+
 function disableAutocomplete() {
   for (const el of document.querySelectorAll('input, select')) {
     el.setAttribute('autocomplete', 'off');
@@ -550,6 +692,7 @@ function buildURL() {
 async function refresh() {
   const mode = qs('mode').value;
   let playedBacksideAlert = false;
+  let playedRBAlert = false;
   const prevTab = activeTab;
   syncModeDependentTabs();
   if (prevTab !== activeTab) {
@@ -564,30 +707,60 @@ async function refresh() {
     }
     const data = await res.json();
     const nextBacksideSignature = (data.backside_candidates || []).map((c) => `${c.symbol}:${c.rank}`).join('|');
+    const nextRubberBandSignature = (data.rubber_band_candidates || []).map((c) => `${c.symbol}:${c.rank}`).join('|');
     if (mode === 'live') {
       const shouldPlayBacksideAlert = hasBacksideSignatureBaseline
         && !!nextBacksideSignature
         && nextBacksideSignature !== lastBacksideSignature;
-      if (shouldPlayBacksideAlert && soundEnabled) {
-        playBacksideChangeAlert();
-        playedBacksideAlert = true;
+      const shouldPlayRBAlert = hasRubberBandSignatureBaseline
+        && !!nextRubberBandSignature
+        && nextRubberBandSignature !== lastRubberBandSignature;
+      if (soundEnabled) {
+        if (shouldPlayBacksideAlert && shouldPlayRBAlert) {
+          playBacksideChangeAlert();
+          playRubberBandChangeAlert(true, 0.34);
+          playedBacksideAlert = true;
+          playedRBAlert = true;
+        } else if (shouldPlayBacksideAlert) {
+          playBacksideChangeAlert();
+          playedBacksideAlert = true;
+        } else if (shouldPlayRBAlert) {
+          playRubberBandChangeAlert();
+          playedRBAlert = true;
+        }
       }
       lastBacksideSignature = nextBacksideSignature;
       hasBacksideSignatureBaseline = true;
+      lastRubberBandSignature = nextRubberBandSignature;
+      hasRubberBandSignatureBaseline = true;
     } else {
       lastBacksideSignature = '';
       hasBacksideSignatureBaseline = false;
+      lastRubberBandSignature = '';
+      hasRubberBandSignatureBaseline = false;
     }
     lastSnapshot = data;
     let backsideHistoryAdditions = 0;
+    let rbHistoryAdditions = 0;
     try {
       backsideHistoryAdditions = await refreshBacksideHistory(mode);
-      if (mode === 'live' && backsideHistoryAdditions > 0 && !playedBacksideAlert) {
-        playBacksideChangeAlert(true);
+      rbHistoryAdditions = await refreshRBHistory(mode);
+      if (mode === 'live' && soundEnabled) {
+        const shouldPlayBacksideHistoryAlert = backsideHistoryAdditions > 0 && !playedBacksideAlert;
+        const shouldPlayRBHistoryAlert = rbHistoryAdditions > 0 && !playedRBAlert;
+        if (shouldPlayBacksideHistoryAlert && shouldPlayRBHistoryAlert) {
+          playBacksideChangeAlert(true);
+          playRubberBandChangeAlert(true, 0.34);
+        } else if (shouldPlayBacksideHistoryAlert) {
+          playBacksideChangeAlert(true);
+        } else if (shouldPlayRBHistoryAlert) {
+          playRubberBandChangeAlert(true);
+        }
       }
     } catch (histErr) {
       console.error(histErr);
       resetBacksideHistoryState();
+      resetRBHistoryState();
     }
 
     const gateSuffix = built.gateChanges > 0 ? ` | Gate overrides: ${built.gateChanges}` : '';
@@ -600,7 +773,8 @@ async function refresh() {
     const weakestTotal = data.count_weakest ?? ((data.weakest_candidates || []).length);
     const hardPassTotal = data.count_hard_pass ?? (dbg.passed_all_gates || 0);
     const backsideTotal = data.count_backside ?? ((data.backside_candidates || []).length);
-    const splitText = ` | Directional pass: strongest=${strongestTotal}, weakest=${weakestTotal}, hard_pass=${hardPassTotal}, backside=${backsideTotal}`;
+    const rubberBandTotal = data.count_rubber_band ?? ((data.rubber_band_candidates || []).length);
+    const splitText = ` | Directional pass: strongest=${strongestTotal}, weakest=${weakestTotal}, hard_pass=${hardPassTotal}, backside=${backsideTotal}, rb=${rubberBandTotal}`;
     const msgText = data.message ? ` | Note: ${data.message}` : '';
     qs('meta').textContent = `Mode: ${data.mode} | As-of NY: ${data.as_of_ny} | Generated: ${data.generated_at_ny} | Benchmark: ${data.benchmark} | Seen: ${data.count_seen} | Ranked: ${data.count_ranked}${splitText}${hardPassText}${gateSuffix}${dbgText}${sourceText}${maxText}${msgText}`;
     updateTabLabels(data);
@@ -609,8 +783,11 @@ async function refresh() {
     console.error(err);
     lastSnapshot = null;
     resetBacksideHistoryState();
+    resetRBHistoryState();
     lastBacksideSignature = '';
     hasBacksideSignatureBaseline = false;
+    lastRubberBandSignature = '';
+    hasRubberBandSignatureBaseline = false;
     updateTabLabels(null);
     qs('meta').textContent = `Error: ${err.message}`;
   } finally {
@@ -640,6 +817,7 @@ function wire() {
     }
   });
   qs('sound-test')?.addEventListener('click', () => playBacksideChangeAlert(true));
+  qs('rb-sound-test')?.addEventListener('click', () => playRubberBandChangeAlert(true));
   qs('mode').addEventListener('change', () => {
     syncModeDependentTabs();
     setTab(activeTab);
@@ -664,7 +842,9 @@ function wire() {
   qs('tab-rvol')?.addEventListener('click', () => setTab('rvol'));
   qs('tab-hp')?.addEventListener('click', () => setTab('hp'));
   qs('tab-backside')?.addEventListener('click', () => setTab('backside'));
+  qs('tab-rubber-band')?.addEventListener('click', () => setTab('rubber-band'));
   qs('tab-backside-history')?.addEventListener('click', () => setTab('backside-history'));
+  qs('tab-rb-history')?.addEventListener('click', () => setTab('rb-history'));
 }
 
 function setLoading(isLoading, baseText = 'Loading data') {

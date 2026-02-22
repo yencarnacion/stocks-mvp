@@ -133,6 +133,7 @@ func buildMarkdown(snaps []app.TopSnapshot, dayNY time.Time, loc *time.Location,
 		{Title: "Strongest", Signal: "buy", Pick: func(s app.TopSnapshot) []app.Candidate { return s.StrongestCandidates }},
 		{Title: "Weakest", Signal: "sell", Pick: func(s app.TopSnapshot) []app.Candidate { return s.WeakestCandidates }},
 		{Title: "Backside", Signal: "buy", Pick: func(s app.TopSnapshot) []app.Candidate { return s.BacksideCandidates }},
+		{Title: "Rubber Band", Signal: "buy", Pick: func(s app.TopSnapshot) []app.Candidate { return s.RubberBandCandidates }},
 	}
 
 	for _, tab := range tabs {

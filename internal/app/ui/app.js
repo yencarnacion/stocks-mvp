@@ -320,6 +320,7 @@ function listForTab(data) {
 function appendCell(tr, cell) {
   const td = document.createElement('td');
   if (cell && typeof cell === 'object' && cell.href) {
+    td.classList.add('cell-symbol');
     const a = document.createElement('a');
     a.href = cell.href;
     a.target = '_blank';
@@ -336,11 +337,14 @@ function renderTableHeader() {
   const row = document.querySelector('#tbl thead tr');
   if (!row) return;
   row.innerHTML = '';
-  const headers = activeTab === 'backside-history'
+  const isHistory = activeTab === 'backside-history'
     || activeTab === 'rb-bull-history'
-    || activeTab === 'rb-bear-history'
-    ? HISTORY_TAB_HEADERS
-    : MAIN_TABLE_HEADERS;
+    || activeTab === 'rb-bear-history';
+  const headers = isHistory ? HISTORY_TAB_HEADERS : MAIN_TABLE_HEADERS;
+  const table = qs('tbl');
+  if (table) {
+    table.dataset.kind = isHistory ? 'history' : 'main';
+  }
   for (const h of headers) {
     const th = document.createElement('th');
     th.textContent = h;

@@ -3,12 +3,12 @@ let loadingTimer = null;
 let loadingStartedAt = 0;
 let clockTimer = null;
 let audioCtx = null;
-let lastBacksideSignature = '';
-let hasBacksideSignatureBaseline = false;
-let lastRBBullishSignature = '';
-let hasRBBullishSignatureBaseline = false;
-let lastRBBearishSignature = '';
-let hasRBBearishSignatureBaseline = false;
+let lastBacksideSymbols = new Set();
+let hasBacksideSymbolsBaseline = false;
+let lastRBBullishSymbols = new Set();
+let hasRBBullishSymbolsBaseline = false;
+let lastRBBearishSymbols = new Set();
+let hasRBBearishSymbolsBaseline = false;
 let soundEnabled = false;
 let defaultGates = {};
 let tickerURLTemplate = '';
@@ -300,6 +300,37 @@ function rbBullishCandidates(data) {
 function rbBearishCandidates(data) {
   if (!data) return [];
   return data.rubber_band_bearish_candidates || [];
+}
+
+function candidateSymbolSet(candidates) {
+  const out = new Set();
+  for (const c of candidates || []) {
+    const sym = String(c?.symbol || '').trim();
+    if (sym) {
+      out.add(sym);
+    }
+  }
+  return out;
+}
+
+function hasNewSymbol(nextSet, prevSet) {
+  for (const sym of nextSet || []) {
+    if (!prevSet.has(sym)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function enableSoundAlerts() {
+  const soundEl = qs('sound');
+  if (soundEl && !soundEl.checked) {
+    soundEl.checked = true;
+  }
+  soundEnabled = !!soundEl?.checked;
+  if (soundEnabled) {
+    ensureAudioContext();
+  }
 }
 
 function listForTab(data) {
@@ -869,19 +900,16 @@ async function refresh() {
       throw new Error(await res.text());
     }
     const data = await res.json();
-    const nextBacksideSignature = (data.backside_candidates || []).map((c) => `${c.symbol}:${c.rank}`).join('|');
-    const nextRBBullishSignature = rbBullishCandidates(data).map((c) => `${c.symbol}:${c.rank}`).join('|');
-    const nextRBBearishSignature = rbBearishCandidates(data).map((c) => `${c.symbol}:${c.rank}`).join('|');
+    const nextBacksideSymbols = candidateSymbolSet(data.backside_candidates || []);
+    const nextRBBullishSymbols = candidateSymbolSet(rbBullishCandidates(data));
+    const nextRBBearishSymbols = candidateSymbolSet(rbBearishCandidates(data));
     if (mode === 'live') {
-      const shouldPlayBacksideAlert = hasBacksideSignatureBaseline
-        && !!nextBacksideSignature
-        && nextBacksideSignature !== lastBacksideSignature;
-      const shouldPlayRBBullAlert = hasRBBullishSignatureBaseline
-        && !!nextRBBullishSignature
-        && nextRBBullishSignature !== lastRBBullishSignature;
-      const shouldPlayRBBearAlert = hasRBBearishSignatureBaseline
-        && !!nextRBBearishSignature
-        && nextRBBearishSignature !== lastRBBearishSignature;
+      const shouldPlayBacksideAlert = hasBacksideSymbolsBaseline
+        && hasNewSymbol(nextBacksideSymbols, lastBacksideSymbols);
+      const shouldPlayRBBullAlert = hasRBBullishSymbolsBaseline
+        && hasNewSymbol(nextRBBullishSymbols, lastRBBullishSymbols);
+      const shouldPlayRBBearAlert = hasRBBearishSymbolsBaseline
+        && hasNewSymbol(nextRBBearishSymbols, lastRBBearishSymbols);
       const shouldPlayRBAlert = shouldPlayRBBullAlert || shouldPlayRBBearAlert;
       if (soundEnabled) {
         if (shouldPlayBacksideAlert && shouldPlayRBAlert) {
@@ -897,19 +925,19 @@ async function refresh() {
           playedRBAlert = true;
         }
       }
-      lastBacksideSignature = nextBacksideSignature;
-      hasBacksideSignatureBaseline = true;
-      lastRBBullishSignature = nextRBBullishSignature;
-      hasRBBullishSignatureBaseline = true;
-      lastRBBearishSignature = nextRBBearishSignature;
-      hasRBBearishSignatureBaseline = true;
+      lastBacksideSymbols = nextBacksideSymbols;
+      hasBacksideSymbolsBaseline = true;
+      lastRBBullishSymbols = nextRBBullishSymbols;
+      hasRBBullishSymbolsBaseline = true;
+      lastRBBearishSymbols = nextRBBearishSymbols;
+      hasRBBearishSymbolsBaseline = true;
     } else {
-      lastBacksideSignature = '';
-      hasBacksideSignatureBaseline = false;
-      lastRBBullishSignature = '';
-      hasRBBullishSignatureBaseline = false;
-      lastRBBearishSignature = '';
-      hasRBBearishSignatureBaseline = false;
+      lastBacksideSymbols = new Set();
+      hasBacksideSymbolsBaseline = false;
+      lastRBBullishSymbols = new Set();
+      hasRBBullishSymbolsBaseline = false;
+      lastRBBearishSymbols = new Set();
+      hasRBBearishSymbolsBaseline = false;
     }
     lastSnapshot = data;
     let backsideHistoryAdditions = 0;
@@ -961,12 +989,12 @@ async function refresh() {
     resetBacksideHistoryState();
     resetRBBullHistoryState();
     resetRBBearHistoryState();
-    lastBacksideSignature = '';
-    hasBacksideSignatureBaseline = false;
-    lastRBBullishSignature = '';
-    hasRBBullishSignatureBaseline = false;
-    lastRBBearishSignature = '';
-    hasRBBearishSignatureBaseline = false;
+    lastBacksideSymbols = new Set();
+    hasBacksideSymbolsBaseline = false;
+    lastRBBullishSymbols = new Set();
+    hasRBBullishSymbolsBaseline = false;
+    lastRBBearishSymbols = new Set();
+    hasRBBearishSymbolsBaseline = false;
     updateTabLabels(null);
     qs('meta').textContent = `Error: ${err.message}`;
   } finally {
@@ -995,8 +1023,14 @@ function wire() {
       ensureAudioContext();
     }
   });
-  qs('sound-test')?.addEventListener('click', () => playBacksideChangeAlert(true));
-  qs('rb-sound-test')?.addEventListener('click', () => playRubberBandChangeAlert(true));
+  qs('sound-test')?.addEventListener('click', () => {
+    enableSoundAlerts();
+    playBacksideChangeAlert(true);
+  });
+  qs('rb-sound-test')?.addEventListener('click', () => {
+    enableSoundAlerts();
+    playRubberBandChangeAlert(true);
+  });
   qs('mode').addEventListener('change', () => {
     syncModeDependentTabs();
     setTab(activeTab);

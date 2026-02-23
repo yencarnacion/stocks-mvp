@@ -1780,17 +1780,21 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 			pushTopK(backside, c, scan.TopK)
 			backsideRanked++
 		}
-		if rubberBandScore, ok := rubberBandSetupScore(st); ok {
-			c := cand
-			c.Score = rubberBandScore
-			pushTopK(rubberBandBullish, c, scan.TopK)
-			rubberBandBullishRanked++
+		if passesRubberBandVWAPSide(row, true) {
+			if rubberBandScore, ok := rubberBandSetupScore(st); ok {
+				c := cand
+				c.Score = rubberBandScore
+				pushTopK(rubberBandBullish, c, scan.TopK)
+				rubberBandBullishRanked++
+			}
 		}
-		if rubberBandBearScore, ok := rubberBandBearishSetupScore(st); ok {
-			c := cand
-			c.Score = rubberBandBearScore
-			pushTopK(rubberBandBearish, c, scan.TopK)
-			rubberBandBearishRanked++
+		if passesRubberBandVWAPSide(row, false) {
+			if rubberBandBearScore, ok := rubberBandBearishSetupScore(st); ok {
+				c := cand
+				c.Score = rubberBandBearScore
+				pushTopK(rubberBandBearish, c, scan.TopK)
+				rubberBandBearishRanked++
+			}
 		}
 
 		if relStrength > 0 {
@@ -2001,6 +2005,16 @@ func passesRVOLTabGates(row featureRow, scan ScanConfig) bool {
 	// RVOL tab intentionally bypasses most hard gates and keeps only dollar-volume constraints.
 	return row.avgDollarVol10d >= scan.MinAvgDollarVol10d &&
 		row.dollarVolPerMin >= scan.MinDollarVolPerM
+}
+
+func passesRubberBandVWAPSide(row featureRow, bullish bool) bool {
+	if row.price <= 0 || row.sessionVWAP <= 0 {
+		return false
+	}
+	if bullish {
+		return row.price < row.sessionVWAP
+	}
+	return row.price > row.sessionVWAP
 }
 
 func pushTopK(h *candHeap, c Candidate, k int) {

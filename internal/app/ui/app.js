@@ -139,20 +139,30 @@ function startClockTicker() {
 function ensureAudioContext() {
   const Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) return null;
-  if (!audioCtx) {
+  if (!audioCtx || audioCtx.state === 'closed') {
     audioCtx = new Ctx();
-  }
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume().catch(() => {});
   }
   return audioCtx;
 }
 
+function withRunningAudioContext(onReady) {
+  const ctx = ensureAudioContext();
+  if (!ctx || typeof onReady !== 'function') return;
+
+  const run = () => onReady(ctx);
+  if (ctx.state === 'running') {
+    run();
+    return;
+  }
+  if (ctx.state === 'closed') {
+    return;
+  }
+  ctx.resume().then(run).catch(() => {});
+}
+
 function wireAudioUnlock() {
   const unlock = () => {
-    ensureAudioContext();
-    document.removeEventListener('pointerdown', unlock);
-    document.removeEventListener('keydown', unlock);
+    withRunningAudioContext(() => {});
   };
   document.addEventListener('pointerdown', unlock, { once: true });
   document.addEventListener('keydown', unlock, { once: true });
@@ -160,51 +170,49 @@ function wireAudioUnlock() {
 
 function playBacksideChangeAlert(force = false, startOffsetSec = 0) {
   if (!force && !soundEnabled) return;
-  const ctx = ensureAudioContext();
-  if (!ctx) return;
+  withRunningAudioContext((ctx) => {
+    const now = ctx.currentTime + 0.02 + Math.max(0, Number(startOffsetSec) || 0);
+    const beepAt = (start, freq) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.16, start + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.16);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.17);
+    };
 
-  const now = ctx.currentTime + Math.max(0, Number(startOffsetSec) || 0);
-  const beepAt = (start, freq) => {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(freq, start);
-    gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(0.11, start + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.12);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(start);
-    osc.stop(start + 0.13);
-  };
-
-  beepAt(now + 0.00, 2200);
-  beepAt(now + 0.17, 2480);
+    beepAt(now + 0.00, 920);
+    beepAt(now + 0.20, 1240);
+  });
 }
 
 function playRubberBandChangeAlert(force = false, startOffsetSec = 0) {
   if (!force && !soundEnabled) return;
-  const ctx = ensureAudioContext();
-  if (!ctx) return;
+  withRunningAudioContext((ctx) => {
+    const now = ctx.currentTime + 0.02 + Math.max(0, Number(startOffsetSec) || 0);
+    const beepAt = (start, freq) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.14, start + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.11);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.12);
+    };
 
-  const now = ctx.currentTime + Math.max(0, Number(startOffsetSec) || 0);
-  const beepAt = (start, freq) => {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(freq, start);
-    gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(0.13, start + 0.006);
-    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.09);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(start);
-    osc.stop(start + 0.095);
-  };
-
-  beepAt(now + 0.00, 3300);
-  beepAt(now + 0.12, 3950);
-  beepAt(now + 0.24, 4700);
+    beepAt(now + 0.00, 740);
+    beepAt(now + 0.13, 988);
+    beepAt(now + 0.26, 1318);
+  });
 }
 
 async function bootstrapGateDefaults() {

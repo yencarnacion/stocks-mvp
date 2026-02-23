@@ -175,6 +175,55 @@ func TestPassesRVOLTabGates(t *testing.T) {
 	}
 }
 
+func TestPassesRubberBandVWAPSideBullishRequiresPriceBelowVWAP(t *testing.T) {
+	row := featureRow{
+		price:       9.95,
+		sessionVWAP: 10.00,
+	}
+	if !passesRubberBandVWAPSide(row, true) {
+		t.Fatalf("expected bullish RB side gate to pass when price is below VWAP")
+	}
+
+	row.price = 10.00
+	if passesRubberBandVWAPSide(row, true) {
+		t.Fatalf("expected bullish RB side gate to fail when price equals VWAP")
+	}
+
+	row.price = 10.05
+	if passesRubberBandVWAPSide(row, true) {
+		t.Fatalf("expected bullish RB side gate to fail when price is above VWAP")
+	}
+}
+
+func TestPassesRubberBandVWAPSideBearishRequiresPriceAboveVWAP(t *testing.T) {
+	row := featureRow{
+		price:       10.05,
+		sessionVWAP: 10.00,
+	}
+	if !passesRubberBandVWAPSide(row, false) {
+		t.Fatalf("expected bearish RB side gate to pass when price is above VWAP")
+	}
+
+	row.price = 10.00
+	if passesRubberBandVWAPSide(row, false) {
+		t.Fatalf("expected bearish RB side gate to fail when price equals VWAP")
+	}
+
+	row.price = 9.95
+	if passesRubberBandVWAPSide(row, false) {
+		t.Fatalf("expected bearish RB side gate to fail when price is below VWAP")
+	}
+}
+
+func TestPassesRubberBandVWAPSideRejectsMissingInputs(t *testing.T) {
+	if passesRubberBandVWAPSide(featureRow{price: 10.0, sessionVWAP: 0}, true) {
+		t.Fatalf("expected RB side gate to fail when VWAP is missing")
+	}
+	if passesRubberBandVWAPSide(featureRow{price: 0, sessionVWAP: 10.0}, false) {
+		t.Fatalf("expected RB side gate to fail when price is missing")
+	}
+}
+
 func testIntradayBar(high, low, close float64) intradayBar {
 	return intradayBar{
 		HighPxN:  int64(math.Round(high * pxScale)),

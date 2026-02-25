@@ -28,6 +28,9 @@ func TestLoadConfigMissingFileReturnsDefaults(t *testing.T) {
 	if cfg.Scan.BacksideMinHHRallyPct != def.Scan.BacksideMinHHRallyPct {
 		t.Fatalf("expected default backside_min_hh_rally_pct %v, got %v", def.Scan.BacksideMinHHRallyPct, cfg.Scan.BacksideMinHHRallyPct)
 	}
+	if cfg.Scan.EpisodicMovePct != def.Scan.EpisodicMovePct {
+		t.Fatalf("expected default episodic_move_pct %v, got %v", def.Scan.EpisodicMovePct, cfg.Scan.EpisodicMovePct)
+	}
 }
 
 func TestLoadConfigAppliesFallbackAliasesAndSortsSpreadCaps(t *testing.T) {
@@ -52,6 +55,7 @@ scan:
   max_staleness: 0s
   historical_timeout: 0s
   backside_min_hh_rally_pct: 0.002
+  episodic_move_pct: 0.031
   min_avg_dollar_vol_10d: 0
   min_avg_dollar_vol_20d: 98765
   spread_caps:
@@ -94,6 +98,9 @@ scan:
 	}
 	if cfg.Scan.BacksideMinHHRallyPct != 0.002 {
 		t.Fatalf("expected backside_min_hh_rally_pct override 0.002, got %v", cfg.Scan.BacksideMinHHRallyPct)
+	}
+	if cfg.Scan.EpisodicMovePct != 0.031 {
+		t.Fatalf("expected episodic_move_pct override 0.031, got %v", cfg.Scan.EpisodicMovePct)
 	}
 	if cfg.Market.Timezone != "America/New_York" {
 		t.Fatalf("expected timezone fallback, got %q", cfg.Market.Timezone)
@@ -145,5 +152,23 @@ func TestLoadConfigNegativeBacksideMinHHRallyPctFallsBackToDefault(t *testing.T)
 	}
 	if cfg.Scan.BacksideMinHHRallyPct != 0.0005 {
 		t.Fatalf("expected negative backside_min_hh_rally_pct to fallback to 0.0005, got %v", cfg.Scan.BacksideMinHHRallyPct)
+	}
+}
+
+func TestLoadConfigNonPositiveEpisodicMovePctFallsBackToDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yml := `scan:
+  episodic_move_pct: 0
+`
+	if err := os.WriteFile(path, []byte(yml), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Scan.EpisodicMovePct != 0.02 {
+		t.Fatalf("expected non-positive episodic_move_pct to fallback to 0.02, got %v", cfg.Scan.EpisodicMovePct)
 	}
 }

@@ -81,6 +81,7 @@ type Candidate struct {
 
 	Symbol string  `json:"symbol"`
 	Score  float64 `json:"score"`
+	Signal string  `json:"signal,omitempty"`
 
 	Price float64 `json:"price"`
 	Bid   float64 `json:"bid"`
@@ -121,6 +122,7 @@ type TopSnapshot struct {
 	CountWeakest           int       `json:"count_weakest"`
 	CountHardPass          int       `json:"count_hard_pass"`
 	CountBackside          int       `json:"count_backside"`
+	CountEpisodic          int       `json:"count_episodic"`
 	CountRubberBandBullish int       `json:"count_rubber_band_bullish"`
 	CountRubberBandBearish int       `json:"count_rubber_band_bearish"`
 	CountRubberBand        int       `json:"count_rubber_band"`
@@ -133,6 +135,7 @@ type TopSnapshot struct {
 	WeakestCandidates           []Candidate `json:"weakest_candidates"`
 	HardPassCandidates          []Candidate `json:"hard_pass_candidates"`
 	BacksideCandidates          []Candidate `json:"backside_candidates"`
+	EpisodicCandidates          []Candidate `json:"episodic_candidates"`
 	RubberBandCandidates        []Candidate `json:"rubber_band_candidates"` // Legacy alias for bullish rubber-band candidates.
 	RubberBandBullishCandidates []Candidate `json:"rubber_band_bullish_candidates"`
 	RubberBandBearishCandidates []Candidate `json:"rubber_band_bearish_candidates"`
@@ -234,6 +237,7 @@ func NewScanner(log *slog.Logger, cfg Config, watchlist map[string]struct{}, bas
 		WeakestCandidates:           []Candidate{},
 		HardPassCandidates:          []Candidate{},
 		BacksideCandidates:          []Candidate{},
+		EpisodicCandidates:          []Candidate{},
 		RubberBandCandidates:        []Candidate{},
 		RubberBandBullishCandidates: []Candidate{},
 		RubberBandBearishCandidates: []Candidate{},
@@ -1446,6 +1450,44 @@ func rubberBandDirectionalSetupScore(st *SymbolState, bullish bool) (float64, bo
 	return score, true
 }
 
+func episodicSetup(st *SymbolState, movePctThreshold float64) (float64, string, bool) {
+	if st == nil {
+		return 0, "", false
+	}
+	bars := barsWithCurrent(st)
+	if len(bars) == 0 {
+		return 0, "", false
+	}
+
+	signal := bars[len(bars)-1]
+	if signal.OpenPxN <= 0 || signal.ClosePxN <= 0 || signal.HighPxN <= 0 || signal.LowPxN <= 0 {
+		return 0, "", false
+	}
+
+	if movePctThreshold <= 0 {
+		movePctThreshold = 0.02
+	}
+	movePct := math.Abs(float64(signal.HighPxN-signal.LowPxN)) / float64(signal.LowPxN)
+	if movePct < movePctThreshold {
+		return 0, "", false
+	}
+
+	dir := ""
+	if signal.ClosePxN > signal.OpenPxN {
+		dir = "buy"
+	} else if signal.ClosePxN < signal.OpenPxN {
+		dir = "sell"
+	} else {
+		return 0, "", false
+	}
+
+	bodyPct := math.Abs(float64(signal.ClosePxN-signal.OpenPxN)) / float64(signal.OpenPxN)
+	rangeScore := clamp01(movePct / 0.05)
+	bodyScore := clamp01(bodyPct / 0.02)
+	score := clamp01(0.75*rangeScore + 0.25*bodyScore)
+	return score, dir, true
+}
+
 func slopePctScore(vwapSlope5m float64, sessionVWAP float64, dir int) float64 {
 	if sessionVWAP <= 0 {
 		return 0
@@ -1650,11 +1692,13 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	strongest := &candHeap{}
 	weakest := &candHeap{}
 	backside := &candHeap{}
+	episodic := &candHeap{}
 	rubberBandBullish := &candHeap{}
 	rubberBandBearish := &candHeap{}
 	heap.Init(strongest)
 	heap.Init(weakest)
 	heap.Init(backside)
+	heap.Init(episodic)
 	heap.Init(rubberBandBullish)
 	heap.Init(rubberBandBearish)
 
@@ -1663,10 +1707,117 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	weakestRanked := 0
 	hardPassRanked := 0
 	backsideRanked := 0
+	episodicRanked := 0
 	rubberBandBullishRanked := 0
 	rubberBandBearishRanked := 0
 	hardPassOut := make([]Candidate, 0, 256)
 	rvolPool := make([]Candidate, 0, 256)
+	episodicTopK := len(s.statesBySymbol)
+	if episodicTopK < 1 {
+		episodicTopK = scan.TopK
+	}
+	for _, st := range s.statesBySymbol {
+		if st == nil || st.OpenPxN <= 0 || st.LastPxN <= 0 || st.HighPxN <= 0 || st.LowPxN <= 0 {
+			continue
+		}
+		episodicScore, episodicSignal, ok := episodicSetup(st, scan.EpisodicMovePct)
+		if !ok {
+			continue
+		}
+
+		price := float64(st.LastPxN) / pxScale
+		bid := float64(st.BidPxN) / pxScale
+		ask := float64(st.AskPxN) / pxScale
+		mid := (bid + ask) / 2
+		spreadPct := 1.0
+		if bid > 0 && ask > 0 && ask > bid && mid > 0 {
+			spreadPct = (ask - bid) / mid
+		}
+		spreadBps := spreadPct * 10000
+
+		lastUpd := int64(st.lastUpdateTs())
+		updatedMsAgo := int64(1 << 62)
+		if lastUpd > 0 {
+			updatedMsAgo = (nowNs - lastUpd) / int64(time.Millisecond)
+			if updatedMsAgo < 0 {
+				updatedMsAgo = 0
+			}
+		}
+
+		base := s.baselineFor(st.Symbol)
+		expVol := base.AvgVol10d * fraction
+		if expVol < 1 {
+			expVol = 1
+		}
+		rvol := float64(st.CumVol) / expVol
+
+		open := float64(st.OpenPxN) / pxScale
+		high := float64(st.HighPxN) / pxScale
+		low := float64(st.LowPxN) / pxScale
+		rangePct := 0.0
+		if open > 0 {
+			rangePct = (high - low) / open
+		}
+		adrExpansion := 0.0
+		if base.AdrPct10d > 0 {
+			adrExpansion = rangePct / base.AdrPct10d
+		}
+		retFromOpen := 0.0
+		if open > 0 {
+			retFromOpen = (price - open) / open
+		}
+		relStrength := retFromOpen - spyRet
+		rs5m, okRS5 := s.relStrengthWindow(st, benchState, nowNs, rsWindow5m)
+		if !okRS5 {
+			rs5m = relStrength
+		}
+		rs15m, okRS15 := s.relStrengthWindow(st, benchState, nowNs, rsWindow15m)
+		if !okRS15 {
+			rs15m = relStrength
+		}
+		rs30m, okRS30 := s.relStrengthWindow(st, benchState, nowNs, rsWindow30m)
+		if !okRS30 {
+			rs30m = relStrength
+		}
+		sessionVWAP, vwapSlope5m, _, _, _, _ := s.trendState(st, price, nowNs)
+		dollarVolPerMin := st.CumNotional / minutesElapsed
+		avgDollarVol10d := base.AvgDollarVol10d
+		if avgDollarVol10d <= 0 && base.AvgVol10d > 0 && price > 0 {
+			avgDollarVol10d = base.AvgVol10d * price
+		}
+		if avgDollarVol10d <= 0 {
+			avgDollarVol10d = s.cfg.Baselines.FallbackAvgDollarVol10d
+		}
+
+		pushTopK(episodic, Candidate{
+			Symbol:           st.Symbol,
+			Score:            episodicScore,
+			Signal:           episodicSignal,
+			Price:            price,
+			Bid:              bid,
+			Ask:              ask,
+			SpreadPct:        spreadPct,
+			SpreadBps:        spreadBps,
+			CumVol:           st.CumVol,
+			RVOL:             rvol,
+			DollarVolPerMin:  dollarVolPerMin,
+			AvgDollarVol10d:  avgDollarVol10d,
+			RangePct:         rangePct,
+			AdrPct10d:        base.AdrPct10d,
+			AdrExpansion:     adrExpansion,
+			RetFromOpen:      retFromOpen,
+			SpyRetFromOpen:   spyRet,
+			RelStrengthVsSpy: relStrength,
+			RS5mVsSpy:        rs5m,
+			RS15mVsSpy:       rs15m,
+			RS30mVsSpy:       rs30m,
+			SessionVWAP:      sessionVWAP,
+			VWAPSlope5m:      vwapSlope5m,
+			UpdatedMsAgo:     updatedMsAgo,
+		}, episodicTopK)
+		episodicRanked++
+	}
+
 	for _, row := range rows {
 		relStrength := row.relStrength
 		debug.RowsEvaluated++
@@ -1732,6 +1883,7 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 			VWAPSlope5m:      row.vwapSlope5m,
 			UpdatedMsAgo:     row.updatedMsAgo,
 		}
+		st := s.statesBySymbol[row.symbol]
 		if passesRVOLTabGates(row, scan) {
 			c := cand
 			c.Score = math.Max(strongestScore, weakestScore)
@@ -1773,7 +1925,6 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 		hardPassOut = append(hardPassOut, cHardPass)
 		hardPassRanked++
 
-		st := s.statesBySymbol[row.symbol]
 		if backsideScore, ok := backsideSetupScore(st, row.price, row.sessionVWAP, scan.BacksideMinHHRallyPct); ok {
 			c := cand
 			c.Score = backsideScore
@@ -1832,6 +1983,7 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	strongestOut := drainRanked(strongest)
 	weakestOut := drainRanked(weakest)
 	backsideOut := drainRanked(backside)
+	episodicOut := drainRanked(episodic)
 	rubberBandBullishOut := drainRanked(rubberBandBullish)
 	rubberBandBearishOut := drainRanked(rubberBandBearish)
 	for i := range strongestOut {
@@ -1849,6 +2001,12 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 	for i := range backsideOut {
 		backsideOut[i].Rank = i + 1
 		if backsideOut[i].SpreadPct > s.maxSpreadPctForScan(backsideOut[i].Price, scan) {
+			debug.CandidateSpreadViolations++
+		}
+	}
+	for i := range episodicOut {
+		episodicOut[i].Rank = i + 1
+		if episodicOut[i].SpreadPct > s.maxSpreadPctForScan(episodicOut[i].Price, scan) {
 			debug.CandidateSpreadViolations++
 		}
 	}
@@ -1888,6 +2046,7 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 		CountWeakest:                weakestRanked,
 		CountHardPass:               hardPassRanked,
 		CountBackside:               backsideRanked,
+		CountEpisodic:               episodicRanked,
 		CountRubberBandBullish:      rubberBandBullishRanked,
 		CountRubberBandBearish:      rubberBandBearishRanked,
 		CountRubberBand:             rubberBandBullishRanked, // Legacy alias for bullish rubber-band count.
@@ -1899,6 +2058,7 @@ func (s *Scanner) computeSnapshotAtWithScan(evalNY time.Time, mode string, scan 
 		WeakestCandidates:           weakestOut,
 		HardPassCandidates:          hardPassOut,
 		BacksideCandidates:          backsideOut,
+		EpisodicCandidates:          episodicOut,
 		RubberBandCandidates:        rubberBandBullishOut,
 		RubberBandBullishCandidates: rubberBandBullishOut,
 		RubberBandBearishCandidates: rubberBandBearishOut,

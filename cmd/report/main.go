@@ -17,11 +17,13 @@ import (
 )
 
 type tabSpec struct {
-	Title  string
-	Signal string
-	Action string
-	Setup  string
-	Pick   func(app.TopSnapshot) []app.Candidate
+	Title     string
+	Signal    string
+	Action    string
+	Setup     string
+	Pick      func(app.TopSnapshot) []app.Candidate
+	SignalFor func(app.Candidate) string
+	ActionFor func(app.Candidate) string
 }
 
 type timedSignals struct {
@@ -135,6 +137,11 @@ func buildMarkdown(snaps []app.TopSnapshot, dayNY time.Time, loc *time.Location,
 		{Title: "Strongest", Signal: "buy", Action: "BUY", Setup: "Relative-strength momentum leaders", Pick: func(s app.TopSnapshot) []app.Candidate { return s.StrongestCandidates }},
 		{Title: "Weakest", Signal: "sell", Action: "SELL", Setup: "Relative-weakness momentum laggards", Pick: func(s app.TopSnapshot) []app.Candidate { return s.WeakestCandidates }},
 		{Title: "Backside", Signal: "buy", Action: "BUY", Setup: "Backside reclaim continuation setup", Pick: func(s app.TopSnapshot) []app.Candidate { return s.BacksideCandidates }},
+		{Title: "Episodic", Signal: "buy", Action: "BUY/SELL", Setup: "Live 1-minute bar range >= episodic_move_pct (default 2%) of that bar low; BUY above the bar open, SELL below the bar open.", Pick: func(s app.TopSnapshot) []app.Candidate { return s.EpisodicCandidates }, SignalFor: func(c app.Candidate) string {
+			return normalizeSignal(c.Signal)
+		}, ActionFor: func(c app.Candidate) string {
+			return actionForSignal(c.Signal)
+		}},
 		{Title: "Rubber Band Bullish", Signal: "buy", Pick: func(s app.TopSnapshot) []app.Candidate {
 			if len(s.RubberBandBullishCandidates) > 0 {
 				return s.RubberBandBullishCandidates
@@ -169,11 +176,25 @@ func buildMarkdown(snaps []app.TopSnapshot, dayNY time.Time, loc *time.Location,
 			b.WriteString("| # | Action | Symbol | Score | Price | RVOL | Spread bps | $/min | ADR x | RS vs Bench |\n")
 			b.WriteString("|---:|:------:|:------|------:|------:|-----:|-----------:|------:|------:|------------:|\n")
 			for _, c := range ts.Rows {
-				sym := formatSymbolMarkdown(c.Symbol, tickerTpl, ts.AsOfNY, tab.Signal)
+				signal := tab.Signal
+				if tab.SignalFor != nil {
+					signal = tab.SignalFor(c)
+				}
+				if strings.TrimSpace(signal) == "" {
+					signal = tab.Signal
+				}
+				action := tab.Action
+				if tab.ActionFor != nil {
+					action = tab.ActionFor(c)
+				}
+				if strings.TrimSpace(action) == "" {
+					action = tab.Action
+				}
+				sym := formatSymbolMarkdown(c.Symbol, tickerTpl, ts.AsOfNY, signal)
 				b.WriteString(fmt.Sprintf(
 					"| %d | %s | %s | %.4f | %.2f | %.2f | %.2f | %s | %.2f | %.2f%% |\n",
 					c.Rank,
-					tab.Action,
+					action,
 					sym,
 					c.Score,
 					c.Price,
@@ -207,6 +228,21 @@ func collectTimed(snaps []app.TopSnapshot, pick func(app.TopSnapshot) []app.Cand
 		})
 	}
 	return out
+}
+
+func normalizeSignal(sig string) string {
+	s := strings.ToLower(strings.TrimSpace(sig))
+	if s == "sell" {
+		return "sell"
+	}
+	return "buy"
+}
+
+func actionForSignal(sig string) string {
+	if normalizeSignal(sig) == "sell" {
+		return "SELL"
+	}
+	return "BUY"
 }
 
 func onlyDate(snaps []app.TopSnapshot, dayNY time.Time, loc *time.Location) []app.TopSnapshot {

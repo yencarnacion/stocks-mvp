@@ -62,6 +62,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/time", s.handleTime)
 	mux.HandleFunc("/api/backside-history", s.handleBacksideHistory)
+	mux.HandleFunc("/api/episodic-history", s.handleEpisodicHistory)
 	mux.HandleFunc("/api/rb-history", s.handleRBHistory)
 	mux.HandleFunc("/api/rb-bull-history", s.handleRBBullHistory)
 	mux.HandleFunc("/api/rb-bear-history", s.handleRBBearHistory)
@@ -218,6 +219,12 @@ func (s *Server) handleBacksideHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleEpisodicHistory(w http.ResponseWriter, r *http.Request) {
+	s.handleSignalHistory(w, r, func(snap TopSnapshot) []Candidate {
+		return snap.EpisodicCandidates
+	})
+}
+
 func (s *Server) handleRBHistory(w http.ResponseWriter, r *http.Request) {
 	// Legacy endpoint kept for compatibility; serves bullish rubber-band history.
 	s.handleRBBullHistory(w, r)
@@ -288,6 +295,12 @@ func collectBacksideHistoryItems(history []TopSnapshot, targetDate string, loc *
 func collectRubberBandHistoryItems(history []TopSnapshot, targetDate string, loc *time.Location) []BacksideHistoryItem {
 	return collectSignalHistoryItems(history, targetDate, loc, func(snap TopSnapshot) []Candidate {
 		return rubberBandBullishRows(snap)
+	})
+}
+
+func collectEpisodicHistoryItems(history []TopSnapshot, targetDate string, loc *time.Location) []BacksideHistoryItem {
+	return collectSignalHistoryItems(history, targetDate, loc, func(snap TopSnapshot) []Candidate {
+		return snap.EpisodicCandidates
 	})
 }
 

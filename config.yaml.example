@@ -33,6 +33,7 @@ scan:
   max_staleness: "60s"
   historical_timeout: "90s"
   backside_min_hh_rally_pct: 0.0005
+  episodic_move_pct: 0.02
 
   min_price: 5
   max_price: 300

@@ -417,3 +417,65 @@ func TestRubberBandBearishSetupScoreRequiresRedSignalCandle(t *testing.T) {
 		t.Fatalf("expected bearish setup to fail for non-red signal candle, got score %.4f", score)
 	}
 }
+
+func TestEpisodicSetupDetectsBullishRangeExpansion(t *testing.T) {
+	st := &SymbolState{
+		Bars: []intradayBar{
+			testIntradayBarOHLC(10.00, 10.05, 9.98, 10.02),
+		},
+		BarMinuteNs: int64(time.Minute),
+		BarOpenPxN:  int64(math.Round(10.00 * pxScale)),
+		BarHighPxN:  int64(math.Round(10.30 * pxScale)),
+		BarLowPxN:   int64(math.Round(10.00 * pxScale)),
+		BarClosePxN: int64(math.Round(10.20 * pxScale)),
+	}
+
+	score, signal, ok := episodicSetup(st, 0.02)
+	if !ok {
+		t.Fatalf("expected episodic setup to pass")
+	}
+	if score <= 0 {
+		t.Fatalf("expected positive score, got %.4f", score)
+	}
+	if signal != "buy" {
+		t.Fatalf("expected bullish signal buy, got %q", signal)
+	}
+}
+
+func TestEpisodicSetupDetectsBearishRangeExpansion(t *testing.T) {
+	st := &SymbolState{
+		Bars: []intradayBar{
+			testIntradayBarOHLC(10.20, 10.25, 10.18, 10.21),
+		},
+		BarMinuteNs: int64(time.Minute),
+		BarOpenPxN:  int64(math.Round(10.10 * pxScale)),
+		BarHighPxN:  int64(math.Round(10.15 * pxScale)),
+		BarLowPxN:   int64(math.Round(9.90 * pxScale)),
+		BarClosePxN: int64(math.Round(9.95 * pxScale)),
+	}
+
+	_, signal, ok := episodicSetup(st, 0.02)
+	if !ok {
+		t.Fatalf("expected episodic bearish setup to pass")
+	}
+	if signal != "sell" {
+		t.Fatalf("expected bearish signal sell, got %q", signal)
+	}
+}
+
+func TestEpisodicSetupRequiresTwoPercentRange(t *testing.T) {
+	st := &SymbolState{
+		Bars: []intradayBar{
+			testIntradayBarOHLC(10.00, 10.05, 9.98, 10.02),
+		},
+		BarMinuteNs: int64(time.Minute),
+		BarOpenPxN:  int64(math.Round(10.00 * pxScale)),
+		BarHighPxN:  int64(math.Round(10.18 * pxScale)),
+		BarLowPxN:   int64(math.Round(10.00 * pxScale)),
+		BarClosePxN: int64(math.Round(10.12 * pxScale)),
+	}
+
+	if score, signal, ok := episodicSetup(st, 0.02); ok {
+		t.Fatalf("expected episodic setup to fail below 2%% range, got score=%.4f signal=%q", score, signal)
+	}
+}

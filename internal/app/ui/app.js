@@ -9,6 +9,8 @@ let lastRBBullishSymbols = new Set();
 let hasRBBullishSymbolsBaseline = false;
 let lastRBBearishSymbols = new Set();
 let hasRBBearishSymbolsBaseline = false;
+let lastEpisodicSymbols = new Set();
+let hasEpisodicSymbolsBaseline = false;
 let soundEnabled = false;
 let defaultGates = {};
 let tickerURLTemplate = '';
@@ -32,6 +34,12 @@ let rbBearHistoryDateNY = '';
 let rbBearHistoryKnownKeys = new Set();
 let rbBearHistoryNewKeys = new Set();
 let hasRBBearHistoryBaseline = false;
+let episodicHistory = [];
+let episodicHistoryByAsOf = new Map();
+let episodicHistoryDateNY = '';
+let episodicHistoryKnownKeys = new Set();
+let episodicHistoryNewKeys = new Set();
+let hasEpisodicHistoryBaseline = false;
 const nyClockFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York',
   year: 'numeric',
@@ -215,6 +223,31 @@ function playRubberBandChangeAlert(force = false, startOffsetSec = 0) {
   });
 }
 
+function playEpisodicChangeAlert(force = false, startOffsetSec = 0) {
+  if (!force && !soundEnabled) return;
+  withRunningAudioContext((ctx) => {
+    const now = ctx.currentTime + 0.02 + Math.max(0, Number(startOffsetSec) || 0);
+    const pulseAt = (start, f0, f1, dur = 0.12) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(f0, start);
+      osc.frequency.exponentialRampToValueAtTime(f1, start + dur);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.18, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + dur + 0.01);
+    };
+
+    pulseAt(now + 0.00, 1200, 700, 0.14);
+    pulseAt(now + 0.16, 700, 1200, 0.14);
+    pulseAt(now + 0.32, 1200, 700, 0.14);
+  });
+}
+
 async function bootstrapGateDefaults() {
   try {
     const res = await fetch('/api/settings', { cache: 'no-store' });
@@ -302,6 +335,17 @@ function rbBearishCandidates(data) {
   return data.rubber_band_bearish_candidates || [];
 }
 
+function episodicCandidates(data) {
+  if (!data) return [];
+  return data.episodic_candidates || [];
+}
+
+function normalizedSignal(sig, fallback = 'buy') {
+  const s = String(sig || '').trim().toLowerCase();
+  if (s === 'sell') return 'sell';
+  return fallback;
+}
+
 function candidateSymbolSet(candidates) {
   const out = new Set();
   for (const c of candidates || []) {
@@ -377,6 +421,7 @@ function renderTableHeader() {
   if (!row) return;
   row.innerHTML = '';
   const isHistory = activeTab === 'backside-history'
+    || activeTab === 'episodic-history'
     || activeTab === 'rb-bull-history'
     || activeTab === 'rb-bear-history';
   const headers = isHistory ? HISTORY_TAB_HEADERS : MAIN_TABLE_HEADERS;
@@ -426,19 +471,20 @@ function renderDefaultRows(data) {
   }
 }
 
-function renderHistoryRows(items, newKeys, signal = 'buy') {
+function renderHistoryRows(items, newKeys, signal = 'buy', signalForRow = null) {
   const tbody = document.querySelector('#tbl tbody');
   tbody.innerHTML = '';
 
   for (const item of items) {
     for (const c of item.rows || []) {
       const tr = document.createElement('tr');
-      if (signal === 'buy') {
+      const rowSignal = signalForRow ? signalForRow(c, item) : signal;
+      if (rowSignal === 'buy') {
         tr.classList.add('row-bullish-signal');
-      } else if (signal === 'sell') {
+      } else if (rowSignal === 'sell') {
         tr.classList.add('row-bearish-signal');
       }
-      const link = formatHistoryTickerURL(c.symbol, item.as_of_ny, signal);
+      const link = formatHistoryTickerURL(c.symbol, item.as_of_ny, rowSignal);
       const key = `${item.as_of_ny || ''}|${c.symbol || ''}`;
       const isNew = newKeys.has(key);
       if (isNew) {
@@ -470,6 +516,15 @@ function renderRows(data) {
     renderHistoryRows(backsideHistory, backsideHistoryNewKeys, 'buy');
     return;
   }
+  if (activeTab === 'episodic-history') {
+    renderHistoryRows(
+      episodicHistory,
+      episodicHistoryNewKeys,
+      'buy',
+      (row) => normalizedSignal(row?.signal, 'buy'),
+    );
+    return;
+  }
   if (activeTab === 'rb-bull-history') {
     renderHistoryRows(rbBullHistory, rbBullHistoryNewKeys, 'buy');
     return;
@@ -485,10 +540,14 @@ function syncModeDependentTabs() {
   const mode = qs('mode')?.value;
   const isLive = mode === 'live';
   qs('tab-backside-history')?.classList.toggle('hidden', !isLive);
+  qs('tab-episodic-history')?.classList.toggle('hidden', !isLive);
   qs('tab-rb-bull-history')?.classList.toggle('hidden', !isLive);
   qs('tab-rb-bear-history')?.classList.toggle('hidden', !isLive);
   if (!isLive && activeTab === 'backside-history') {
     activeTab = 'backside';
+  }
+  if (!isLive && activeTab === 'episodic-history') {
+    activeTab = 'strongest';
   }
   if (!isLive && (activeTab === 'rb-bull-history' || activeTab === 'rb-bear-history')) {
     activeTab = activeTab === 'rb-bear-history' ? 'rb-bearish' : 'rb-bullish';
@@ -504,7 +563,7 @@ function setTab(tab) {
       tab === 'backside' ||
       tab === 'rb-bullish' ||
       tab === 'rb-bearish' ||
-      (isLive && (tab === 'backside-history' || tab === 'rb-bull-history' || tab === 'rb-bear-history'))
+      (isLive && (tab === 'backside-history' || tab === 'episodic-history' || tab === 'rb-bull-history' || tab === 'rb-bear-history'))
     ? tab
     : 'strongest';
   qs('tab-strongest')?.classList.toggle('active', activeTab === 'strongest');
@@ -515,6 +574,7 @@ function setTab(tab) {
   qs('tab-rubber-band-bullish')?.classList.toggle('active', activeTab === 'rb-bullish');
   qs('tab-rubber-band-bearish')?.classList.toggle('active', activeTab === 'rb-bearish');
   qs('tab-backside-history')?.classList.toggle('active', activeTab === 'backside-history');
+  qs('tab-episodic-history')?.classList.toggle('active', activeTab === 'episodic-history');
   qs('tab-rb-bull-history')?.classList.toggle('active', activeTab === 'rb-bull-history');
   qs('tab-rb-bear-history')?.classList.toggle('active', activeTab === 'rb-bear-history');
   applyActiveTabTone();
@@ -546,6 +606,7 @@ function updateTabLabels(data) {
   const rbBullCount = rbBullishCandidates(data).length;
   const rbBearCount = rbBearishCandidates(data).length;
   const backsideHistoryCount = (backsideHistory || []).reduce((sum, item) => sum + ((item.rows || []).length), 0);
+  const episodicHistoryCount = (episodicHistory || []).reduce((sum, item) => sum + ((item.rows || []).length), 0);
   const rbBullHistoryCount = (rbBullHistory || []).reduce((sum, item) => sum + ((item.rows || []).length), 0);
   const rbBearHistoryCount = (rbBearHistory || []).reduce((sum, item) => sum + ((item.rows || []).length), 0);
   if (qs('tab-strongest')) qs('tab-strongest').textContent = `Strongest (${strongestCount})`;
@@ -553,6 +614,7 @@ function updateTabLabels(data) {
   if (qs('tab-rvol')) qs('tab-rvol').textContent = `RVOL (${rvolCount})`;
   if (qs('tab-hp')) qs('tab-hp').textContent = `HP (${hpCount})`;
   if (qs('tab-backside')) qs('tab-backside').textContent = `Backside (${backsideCount})`;
+  if (qs('tab-episodic-history')) qs('tab-episodic-history').textContent = `Episodic (${episodicHistoryCount})`;
   if (qs('tab-rubber-band-bullish')) qs('tab-rubber-band-bullish').textContent = `RB Bullish (${rbBullCount})`;
   if (qs('tab-rubber-band-bearish')) qs('tab-rubber-band-bearish').textContent = `RB Bearish (${rbBearCount})`;
   if (qs('tab-backside-history')) qs('tab-backside-history').textContent = `Backside Historical (${backsideHistoryCount})`;
@@ -585,6 +647,15 @@ function resetRBBearHistoryState() {
   rbBearHistoryKnownKeys = new Set();
   rbBearHistoryNewKeys = new Set();
   hasRBBearHistoryBaseline = false;
+}
+
+function resetEpisodicHistoryState() {
+  episodicHistory = [];
+  episodicHistoryByAsOf = new Map();
+  episodicHistoryDateNY = '';
+  episodicHistoryKnownKeys = new Set();
+  episodicHistoryNewKeys = new Set();
+  hasEpisodicHistoryBaseline = false;
 }
 
 async function refreshBacksideHistory(mode) {
@@ -662,6 +733,84 @@ async function refreshBacksideHistory(mode) {
   backsideHistoryNewKeys = newlyAdded;
   backsideHistoryKnownKeys = nextKnown;
   hasBacksideHistoryBaseline = true;
+  return newlyAdded.size;
+}
+
+async function refreshEpisodicHistory(mode) {
+  if (mode !== 'live') {
+    resetEpisodicHistoryState();
+    return 0;
+  }
+  const params = new URLSearchParams({ mode: 'live' });
+  const date = qs('date')?.value;
+  if (date) {
+    params.set('date', date);
+  }
+  const res = await fetch(`/api/episodic-history?${params.toString()}`, { cache: 'no-store' });
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+  const data = await res.json();
+  const items = Array.isArray(data.items) ? data.items : [];
+  const nextDateNY = String(data.date_ny || date || '').trim();
+  if (nextDateNY && episodicHistoryDateNY && nextDateNY !== episodicHistoryDateNY) {
+    resetEpisodicHistoryState();
+  }
+  if (nextDateNY && !episodicHistoryDateNY) {
+    episodicHistoryDateNY = nextDateNY;
+  }
+
+  const newlyAdded = new Set();
+  for (const item of items) {
+    const asOf = String(item.as_of_ny || '').trim();
+    if (!asOf) {
+      continue;
+    }
+    const existing = episodicHistoryByAsOf.get(asOf) || {
+      time_label: item.time_label || '',
+      as_of_ny: asOf,
+      rows: [],
+    };
+    if (item.time_label) {
+      existing.time_label = item.time_label;
+    }
+
+    const rowKeys = new Set((existing.rows || []).map((row) => `${asOf}|${row.symbol || ''}`));
+    for (const c of item.rows || []) {
+      const key = `${asOf}|${c.symbol || ''}`;
+      if (!rowKeys.has(key)) {
+        existing.rows.push(c);
+        rowKeys.add(key);
+        if (hasEpisodicHistoryBaseline && !episodicHistoryKnownKeys.has(key)) {
+          newlyAdded.add(key);
+        }
+      }
+    }
+    existing.rows.sort((a, b) => {
+      const ar = Number(a?.rank ?? 0);
+      const br = Number(b?.rank ?? 0);
+      if (ar !== br) return ar - br;
+      return String(a?.symbol || '').localeCompare(String(b?.symbol || ''));
+    });
+    episodicHistoryByAsOf.set(asOf, existing);
+  }
+
+  episodicHistory = Array.from(episodicHistoryByAsOf.values()).sort((a, b) => {
+    const ak = String(a?.as_of_ny || '');
+    const bk = String(b?.as_of_ny || '');
+    if (ak === bk) return 0;
+    return ak < bk ? 1 : -1;
+  });
+
+  const nextKnown = new Set();
+  for (const item of episodicHistory) {
+    for (const c of item.rows || []) {
+      nextKnown.add(`${item.as_of_ny || ''}|${c.symbol || ''}`);
+    }
+  }
+  episodicHistoryNewKeys = newlyAdded;
+  episodicHistoryKnownKeys = nextKnown;
+  hasEpisodicHistoryBaseline = true;
   return newlyAdded.size;
 }
 
@@ -887,6 +1036,7 @@ async function refresh() {
   const mode = qs('mode').value;
   let playedBacksideAlert = false;
   let playedRBAlert = false;
+  let playedEpisodicAlert = false;
   const prevTab = activeTab;
   syncModeDependentTabs();
   if (prevTab !== activeTab) {
@@ -903,6 +1053,7 @@ async function refresh() {
     const nextBacksideSymbols = candidateSymbolSet(data.backside_candidates || []);
     const nextRBBullishSymbols = candidateSymbolSet(rbBullishCandidates(data));
     const nextRBBearishSymbols = candidateSymbolSet(rbBearishCandidates(data));
+    const nextEpisodicSymbols = candidateSymbolSet(episodicCandidates(data));
     if (mode === 'live') {
       const shouldPlayBacksideAlert = hasBacksideSymbolsBaseline
         && hasNewSymbol(nextBacksideSymbols, lastBacksideSymbols);
@@ -910,19 +1061,24 @@ async function refresh() {
         && hasNewSymbol(nextRBBullishSymbols, lastRBBullishSymbols);
       const shouldPlayRBBearAlert = hasRBBearishSymbolsBaseline
         && hasNewSymbol(nextRBBearishSymbols, lastRBBearishSymbols);
+      const shouldPlayEpisodicAlert = hasEpisodicSymbolsBaseline
+        && hasNewSymbol(nextEpisodicSymbols, lastEpisodicSymbols);
       const shouldPlayRBAlert = shouldPlayRBBullAlert || shouldPlayRBBearAlert;
       if (soundEnabled) {
-        if (shouldPlayBacksideAlert && shouldPlayRBAlert) {
-          playBacksideChangeAlert();
-          playRubberBandChangeAlert(true, 0.34);
+        let offset = 0;
+        if (shouldPlayBacksideAlert) {
+          playBacksideChangeAlert(true, offset);
+          offset += 0.34;
           playedBacksideAlert = true;
+        }
+        if (shouldPlayRBAlert) {
+          playRubberBandChangeAlert(true, offset);
+          offset += 0.42;
           playedRBAlert = true;
-        } else if (shouldPlayBacksideAlert) {
-          playBacksideChangeAlert();
-          playedBacksideAlert = true;
-        } else if (shouldPlayRBAlert) {
-          playRubberBandChangeAlert();
-          playedRBAlert = true;
+        }
+        if (shouldPlayEpisodicAlert) {
+          playEpisodicChangeAlert(true, offset);
+          playedEpisodicAlert = true;
         }
       }
       lastBacksideSymbols = nextBacksideSymbols;
@@ -931,6 +1087,8 @@ async function refresh() {
       hasRBBullishSymbolsBaseline = true;
       lastRBBearishSymbols = nextRBBearishSymbols;
       hasRBBearishSymbolsBaseline = true;
+      lastEpisodicSymbols = nextEpisodicSymbols;
+      hasEpisodicSymbolsBaseline = true;
     } else {
       lastBacksideSymbols = new Set();
       hasBacksideSymbolsBaseline = false;
@@ -938,30 +1096,40 @@ async function refresh() {
       hasRBBullishSymbolsBaseline = false;
       lastRBBearishSymbols = new Set();
       hasRBBearishSymbolsBaseline = false;
+      lastEpisodicSymbols = new Set();
+      hasEpisodicSymbolsBaseline = false;
     }
     lastSnapshot = data;
     let backsideHistoryAdditions = 0;
+    let episodicHistoryAdditions = 0;
     let rbBullHistoryAdditions = 0;
     let rbBearHistoryAdditions = 0;
     try {
       backsideHistoryAdditions = await refreshBacksideHistory(mode);
+      episodicHistoryAdditions = await refreshEpisodicHistory(mode);
       rbBullHistoryAdditions = await refreshRBBullHistory(mode);
       rbBearHistoryAdditions = await refreshRBBearHistory(mode);
       if (mode === 'live' && soundEnabled) {
         const shouldPlayBacksideHistoryAlert = backsideHistoryAdditions > 0 && !playedBacksideAlert;
+        const shouldPlayEpisodicHistoryAlert = episodicHistoryAdditions > 0 && !playedEpisodicAlert;
         const shouldPlayRBHistoryAlert = (rbBullHistoryAdditions > 0 || rbBearHistoryAdditions > 0) && !playedRBAlert;
-        if (shouldPlayBacksideHistoryAlert && shouldPlayRBHistoryAlert) {
-          playBacksideChangeAlert(true);
-          playRubberBandChangeAlert(true, 0.34);
-        } else if (shouldPlayBacksideHistoryAlert) {
-          playBacksideChangeAlert(true);
-        } else if (shouldPlayRBHistoryAlert) {
-          playRubberBandChangeAlert(true);
+        let offset = 0;
+        if (shouldPlayBacksideHistoryAlert) {
+          playBacksideChangeAlert(true, offset);
+          offset += 0.34;
+        }
+        if (shouldPlayRBHistoryAlert) {
+          playRubberBandChangeAlert(true, offset);
+          offset += 0.42;
+        }
+        if (shouldPlayEpisodicHistoryAlert) {
+          playEpisodicChangeAlert(true, offset);
         }
       }
     } catch (histErr) {
       console.error(histErr);
       resetBacksideHistoryState();
+      resetEpisodicHistoryState();
       resetRBBullHistoryState();
       resetRBBearHistoryState();
     }
@@ -976,9 +1144,10 @@ async function refresh() {
     const weakestTotal = data.count_weakest ?? ((data.weakest_candidates || []).length);
     const hardPassTotal = data.count_hard_pass ?? (dbg.passed_all_gates || 0);
     const backsideTotal = data.count_backside ?? ((data.backside_candidates || []).length);
+    const episodicTotal = data.count_episodic ?? episodicCandidates(data).length;
     const rbBullTotal = data.count_rubber_band_bullish ?? data.count_rubber_band ?? rbBullishCandidates(data).length;
     const rbBearTotal = data.count_rubber_band_bearish ?? rbBearishCandidates(data).length;
-    const splitText = ` | Directional pass: strongest=${strongestTotal}, weakest=${weakestTotal}, hard_pass=${hardPassTotal}, backside=${backsideTotal}, rb_bull=${rbBullTotal}, rb_bear=${rbBearTotal}`;
+    const splitText = ` | Directional pass: strongest=${strongestTotal}, weakest=${weakestTotal}, hard_pass=${hardPassTotal}, backside=${backsideTotal}, episodic=${episodicTotal}, rb_bull=${rbBullTotal}, rb_bear=${rbBearTotal}`;
     const msgText = data.message ? ` | Note: ${data.message}` : '';
     qs('meta').textContent = `Mode: ${data.mode} | As-of NY: ${data.as_of_ny} | Generated: ${data.generated_at_ny} | Benchmark: ${data.benchmark} | Seen: ${data.count_seen} | Ranked: ${data.count_ranked}${splitText}${hardPassText}${gateSuffix}${dbgText}${sourceText}${maxText}${msgText}`;
     updateTabLabels(data);
@@ -987,6 +1156,7 @@ async function refresh() {
     console.error(err);
     lastSnapshot = null;
     resetBacksideHistoryState();
+    resetEpisodicHistoryState();
     resetRBBullHistoryState();
     resetRBBearHistoryState();
     lastBacksideSymbols = new Set();
@@ -995,6 +1165,8 @@ async function refresh() {
     hasRBBullishSymbolsBaseline = false;
     lastRBBearishSymbols = new Set();
     hasRBBearishSymbolsBaseline = false;
+    lastEpisodicSymbols = new Set();
+    hasEpisodicSymbolsBaseline = false;
     updateTabLabels(null);
     qs('meta').textContent = `Error: ${err.message}`;
   } finally {
@@ -1031,6 +1203,10 @@ function wire() {
     enableSoundAlerts();
     playRubberBandChangeAlert(true);
   });
+  qs('episodic-sound-test')?.addEventListener('click', () => {
+    enableSoundAlerts();
+    playEpisodicChangeAlert(true);
+  });
   qs('mode').addEventListener('change', () => {
     syncModeDependentTabs();
     setTab(activeTab);
@@ -1058,6 +1234,7 @@ function wire() {
   qs('tab-rubber-band-bullish')?.addEventListener('click', () => setTab('rb-bullish'));
   qs('tab-rubber-band-bearish')?.addEventListener('click', () => setTab('rb-bearish'));
   qs('tab-backside-history')?.addEventListener('click', () => setTab('backside-history'));
+  qs('tab-episodic-history')?.addEventListener('click', () => setTab('episodic-history'));
   qs('tab-rb-bull-history')?.addEventListener('click', () => setTab('rb-bull-history'));
   qs('tab-rb-bear-history')?.addEventListener('click', () => setTab('rb-bear-history'));
 }

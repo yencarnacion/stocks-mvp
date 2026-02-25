@@ -94,6 +94,7 @@ type ScanConfig struct {
 	MaxStaleness          Duration `yaml:"max_staleness"`
 	HistoricalTimeout     Duration `yaml:"historical_timeout"`
 	BacksideMinHHRallyPct float64  `yaml:"backside_min_hh_rally_pct"`
+	EpisodicMovePct       float64  `yaml:"episodic_move_pct"`
 	MinPrice              float64  `yaml:"min_price"`
 	MaxPrice              float64  `yaml:"max_price"`
 	MinRVOL               float64  `yaml:"min_rvol"`
@@ -143,6 +144,7 @@ func defaultConfig() Config {
 			MaxStaleness:          Duration{60 * time.Second},
 			HistoricalTimeout:     Duration{90 * time.Second},
 			BacksideMinHHRallyPct: 0.0005,
+			EpisodicMovePct:       0.02,
 			MinPrice:              5,
 			MaxPrice:              300,
 			MinRVOL:               2.0,
@@ -204,6 +206,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if cfg.Scan.BacksideMinHHRallyPct < 0 {
 		cfg.Scan.BacksideMinHHRallyPct = 0.0005
+	}
+	if cfg.Scan.EpisodicMovePct <= 0 {
+		cfg.Scan.EpisodicMovePct = 0.02
 	}
 	if cfg.Market.Timezone == "" {
 		cfg.Market.Timezone = "America/New_York"
